@@ -1,114 +1,48 @@
-# ai-bot — POST_READY.md
+# ai-bot — POST_READY
 
-## Status: ✅ 100% COPY-AND-POST READY
+## ✅ Post-worthy: YES (redesigned 2026-06-14)
 
----
+## Attach this file first
+`promo/images/04-github-preview.png`  →  GitHub social preview
 
-## Best Image to Post First
-`promo/images/04-github-preview.png` (1280x720) — terminal screenshot looks great on GitHub/Twitter
+## Best image to post first
+`promo/images/04-github-preview.png`
 
-## Screenshots Used
-- `audit/screenshots/final-ready/ai-bot/01-terminal-real.png`
-  - Source: Real CLI `--help` output + `python -c "import config; print(config.SYMBOL, config.MODE)"`
-  - Rendered as HTML terminal card via headless Chrome
-  - Contains ONLY real captured output — no invented figures
+**Why it's the strongest:** The real terminal help output reads as a credible developer research tool; framed plainly it stays honest and avoids any "get-rich" trading vibe.
 
-## ⚠️ POSITIONING NOTE
-ai-bot is a **Python research/automation CLI tool** for algorithmic strategy development.
-It is NOT positioned as a trading service, investment advisor, or financial product.
-Do not claim it generates profits. Do not show specific trade results.
+## Recommended platform order
+GitHub preview → X → LinkedIn (keep it technical/neutral)
 
-## Promo Image Files
-| File | Size | Use For |
-|------|------|---------|
-| `promo/images/01-square-post.png` | 1080×1080 | Instagram, LinkedIn post |
-| `promo/images/02-story-reel-cover.png` | 1080×1920 | IG/TikTok story |
-| `promo/images/03-linkedin-banner.png` | 1600×900 | LinkedIn banner |
-| `promo/images/04-github-preview.png` | 1280×720 | GitHub social preview ← USE THIS FIRST |
-| `promo/images/05-feature-card.png` | 1200×1200 | Product Hunt |
-
----
-
-## Exact Copy-Paste Caption
-
+## Exact caption (copy–paste)
 ```
-Built a Python CLI research tool for algorithmic strategy analysis — ai-bot 🐍
+A research tool for market data & backtesting. 🧪
 
-ai-bot is an open-source Python tool for backtesting and paper-mode strategy research.
-Not a trading service — a developer/researcher tool.
+ai-bot runs multi-timeframe analysis, walk-forward backtests and paper trading from the CLI — built for learning, not trading advice. Paper mode with a CSV audit trail.
 
-Stack:
-→ Python + ccxt (exchange data)
-→ pandas + numpy (data processing)
-→ scikit-learn (ML confidence filter)
-→ Backtest + paper modes (no live orders by default)
+Research / educational use only. Not financial advice.
 
-For developers and researchers studying algorithmic strategies.
-Not financial advice. Research/educational tool only.
-
-GitHub link in bio.
-
-#python #algotrading #backtesting #machinelearning #opensource #buildinpublic #developer #research
+#python #datascience #backtesting #opensource
 ```
 
----
+## ⚠️ Disclaimer (must include)
+REQUIRED on every post: "Research / educational use only. Not financial advice." Keep copy neutral — no profit, ROI, win-rate or "signals you can trade" claims.
 
-## Hashtags
-```
-#python #algorithmic #backtesting #machinelearning #sklearn #pandas #ccxt #opensource #developer #research #buildinpublic #flegartech
-```
+## All 5 assets
+| File | Use for |
+|------|---------|
+| `promo/images/01-square-post.png` | 1080×1080 — Instagram / LinkedIn feed |
+| `promo/images/02-story-reel-cover.png` | 1080×1920 — IG / TikTok story & reel cover |
+| `promo/images/03-linkedin-banner.png` | 1600×900 — LinkedIn feature / X / YouTube |
+| `promo/images/04-github-preview.png` | 1280×720 — GitHub social preview |
+| `promo/images/05-feature-card.png` | 1200×1200 — Product Hunt / feature card |
 
-## Suggested Platforms (in order)
-1. GitHub (set social preview: `04-github-preview.png`)
-2. Twitter/X (developer/quant audience)
-3. LinkedIn
-4. Reddit r/algotrading or r/learnpython
+## Screenshot used
+final-ready/ai-bot/01-terminal-real.png — real CLI output
 
----
-
-## Safe Public Claims
-- "Python CLI research tool for strategy analysis"
-- "Backtest and paper modes"
-- "ccxt + pandas + scikit-learn stack"
-- "ML confidence filter"
-- "Open source"
-- "No live orders in default mode"
-
-## Claims to AVOID
-- NEVER claim profit, returns, or financial performance
-- NEVER show specific trade P&L or results
-- NEVER imply it's a financial product or service
-- NEVER call it a "trading bot" without "research" qualifier
-- Add disclaimer: "Not financial advice. Research/educational tool only."
-
----
-
-## 15-Second Video Script
-> "ai-bot — an open-source Python research tool for algorithmic strategy analysis.
-> Backtest mode, paper mode, ML filter. ccxt and scikit-learn.
-> For researchers and developers. Not financial advice. Research/educational tool only.
-> GitHub link in bio."
-
-## 30-Second Demo Script
-> "ai-bot is a Python CLI tool for studying algorithmic strategies.
-> Run it in backtest mode to analyze historical data.
-> Run it in paper mode — no real orders, just simulation.
-> It uses ccxt to fetch market data, pandas to process it,
-> and scikit-learn for an ML confidence filter.
-> The strategy modules are modular — swap in your own logic.
-> Open source, research-focused. Not financial advice. Research/educational tool only.
-> GitHub link in bio."
-
----
-
-## Promo Image Review
-- [x] All 5 images exist
-- [x] All correct sizes
-- [x] Real terminal output screenshot (--help + config only)
-- [x] No private information visible
-- [x] No fake or invented financial data
-- [x] No financial performance claims
-- [x] Text readable
-- [x] Professional quality
-
-## Final Ready Status: ✅ COPY-AND-POST READY (with financial disclaimer required)
+## QC checklist
+- [x] All 5 images exist at the correct sizes
+- [x] Real product screenshot used (no faked UI)
+- [x] Clean browser-frame composition, high-contrast readable text
+- [x] Unified FlegarTech brand (dark canvas + green accent)
+- [x] No fake claims
+- [x] Required disclaimer noted above
