@@ -12,6 +12,7 @@ import argparse
 import time
 import sys
 import io
+import signal
 from datetime import datetime, timezone
 
 # Force UTF-8 output so box/color characters don't crash on Windows cp1252
@@ -196,6 +197,11 @@ def run_trading_loop(mode: str, symbol: str, use_ml: bool = True):
 
 # ─── Entry Point ──────────────────────────────────────────────────────────────
 
+def _raise_keyboard_interrupt(_signum, _frame):
+    """SIGTERM handler: re-route to the loop's graceful KeyboardInterrupt path."""
+    raise KeyboardInterrupt
+
+
 def main():
     args = parse_args()
     use_ml = not args.no_ml
@@ -223,6 +229,10 @@ def main():
             if confirm != "YES":
                 print("  Aborted.")
                 sys.exit(0)
+        # Treat SIGTERM (e.g. `docker stop` / orchestrator shutdown) like Ctrl-C so
+        # the trading loop unwinds through its graceful KeyboardInterrupt path
+        # (session summary, exit 0) instead of being terminated abruptly.
+        signal.signal(signal.SIGTERM, _raise_keyboard_interrupt)
         run_trading_loop(args.mode, args.symbol, use_ml=use_ml)
 
     else:
