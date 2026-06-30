@@ -73,7 +73,7 @@ def error(msg: str):
 
 
 def trade_signal(direction: str, symbol: str, entry: float, sl: float,
-                 tp: float, size: float, confidence: float = None):
+                 tp: float, size: float, confidence: float | None = None):
     """Pretty-print a trade signal."""
     color = Fore.GREEN if direction == "LONG" else Fore.RED
     ts = datetime.now().strftime("%H:%M:%S")
@@ -88,7 +88,7 @@ def trade_signal(direction: str, symbol: str, entry: float, sl: float,
     print(f"  Take Profit: {Fore.GREEN}{tp:.4f}{Style.RESET_ALL}")
     print(f"  Size      : {size:.6f}")
     if confidence is not None:
-        conf_color = Fore.GREEN if confidence >= 0.70 else Fore.YELLOW
+        conf_color = Fore.GREEN if confidence >= config.ML_CONFIDENCE_THRESHOLD else Fore.YELLOW
         print(f"  ML Conf   : {conf_color}{confidence:.1%}{Style.RESET_ALL}")
     print(f"{color}{'-' * 55}{Style.RESET_ALL}")
     print()

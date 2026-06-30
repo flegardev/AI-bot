@@ -57,12 +57,21 @@ Do **not** deploy to Vercel/Netlify (no long-running process / no serverless fit
 - Daily-loss and stop-loss-side guards block invalid/over-limit trades.
 - Never commit real API keys. Use platform secret stores / `--env-file`.
 
-## Known limitation — ML model version
-`ml/model.pkl` was trained with scikit-learn 1.7.2; the pinned runtime is 1.9.0,
-so loading emits an `InconsistentVersionWarning`. The predictor still loads and
-**degrades gracefully** (returns neutral confidence on failure), and the ML
-filter is optional (`--no-ml`). To remove the warning and guarantee fidelity,
-retrain the model on the pinned stack:
+## ML model — not shipped, train before relying on it
+No `ml/model.pkl` is committed (the file is git-ignored). The ML confidence
+filter is **ON by default**, and an untrained model returns a neutral `0.5`
+confidence, which is below `ML_CONFIDENCE_THRESHOLD` (0.70) — so **no trades are
+taken until you either train a model or disable the filter**. The bot prints a
+clear warning at startup when this is the case.
+
+Two supported options:
 ```bash
-python main.py --mode backtest --train-ml   # regenerates ml/model.pkl
+# 1. Train a model from a backtest (saves ml/model.pkl on the pinned sklearn):
+python main.py --mode backtest --train-ml
+
+# 2. Or run without the ML filter (rule-based signals only):
+python main.py --mode paper --no-ml
 ```
+Because the model is always trained on the pinned scikit-learn version, there is
+no cross-version load warning. If a model trained on a different version is ever
+loaded and fails, the predictor degrades gracefully to neutral confidence.

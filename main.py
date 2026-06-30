@@ -143,6 +143,17 @@ def run_trading_loop(mode: str, symbol: str, use_ml: bool = True):
     logger.info(f"Bot started — mode={mode.upper()}  symbol={symbol}")
     logger.info(f"ML filter: {'ON' if use_ml else 'OFF'}  "
                 f"Max trades/session: {config.MAX_TRADES_PER_SESSION}")
+
+    # If the ML filter is active but no model has been trained, every signal
+    # will be blocked (an untrained model returns neutral 0.5 confidence, which
+    # is below the threshold). Warn once at startup so this isn't mistaken for
+    # the strategy simply finding no setups.
+    if use_ml and config.USE_ML_FILTER and not get_predictor().is_trained:
+        logger.warning(
+            "ML filter is ON but no trained model was found "
+            f"({config.ML_MODEL_PATH}). No trades will be taken until you "
+            "train it (`--mode backtest --train-ml`) or disable it (`--no-ml`)."
+        )
     print()
 
     POLL_SECONDS = 60  # Check every 60 seconds (1 minute)

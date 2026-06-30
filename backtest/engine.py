@@ -221,12 +221,24 @@ class BacktestEngine:
                 continue
 
             # ── Step 5: Simulate exit ─────────────────────────────────────────
+            # Capture the same features the live predictor sees at inference
+            # time, so ML training data matches serving data (no train/serve
+            # skew). volume_ratio mirrors MLPredictor.extract_features.
+            vol_avg = slice_5m["volume"].rolling(20).mean().iloc[-1]
+            volume_ratio = (
+                slice_5m["volume"].iloc[-1] / vol_avg
+                if pd.notna(vol_avg) and vol_avg > 0
+                else 1.0
+            )
+
             trade_params["entry_timestamp"] = ts.isoformat()
             trade_params["symbol"]          = self.symbol
             trade_params["mode"]            = "backtest"
             trade_params["sweep_type"]      = sweep["direction"]
             trade_params["signal_type"]     = entry_det.get("type", "BOS")
             trade_params["rsi_14"]          = entry_det.get("rsi_14", 50.0)
+            trade_params["atr_pct"]         = entry_det.get("atr_pct", 0.0)
+            trade_params["volume_ratio"]    = float(volume_ratio)
             trade_params["ema_dist_pct"]    = bias.get("ema_distance_pct", 0.0)
 
             closed = self._simulate_trade_exit(trade_params, df_5m, i + 1)
@@ -316,8 +328,8 @@ class BacktestEngine:
             records.append({
                 "ema_distance_pct": t.get("ema_dist_pct", 0.0),
                 "rsi_14":           t.get("rsi_14", 50.0),
-                "volume_ratio":     1.0,   # Not available in basic backtest
-                "atr_pct":          0.005, # Placeholder
+                "volume_ratio":     t.get("volume_ratio", 1.0),
+                "atr_pct":          t.get("atr_pct", 0.0),
                 "sweep_direction":  1 if t.get("sweep_type") == "bullish" else -1,
                 "signal_type":      1 if t.get("signal_type") == "CHoCH" else 0,
                 "result":           t["result"],

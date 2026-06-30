@@ -13,6 +13,5 @@ logs
 *.log
 promo
 *.md
-INSTALLED_SKILLS_REPORT.md
 tests
 .pytest_cache
