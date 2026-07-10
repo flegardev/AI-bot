@@ -105,6 +105,16 @@ python main.py --mode live
 
 Paper mode uses real-time data but never places real orders. Position state is saved in `state/paper_state.json` and closed trades are written to `trades.csv`.
 
+### Local browser demo
+
+For a safe visual demo with deterministic local data, run:
+
+```bash
+python web_demo.py
+```
+
+Then open `http://127.0.0.1:8765`. The dashboard, strategy breakdown, backtest report, and `/api/evaluate` endpoint use the real strategy and risk modules without API keys or exchange orders.
+
 ---
 
 ## Risk configuration
