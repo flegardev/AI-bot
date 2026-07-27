@@ -1,159 +1,140 @@
-# AI Trading Strategy Bot
+# MT5-first trading bot
 
-An open-source algorithmic trading research tool built in Python. Implements a multi-timeframe technical analysis strategy with backtesting, paper trading simulation, and an optional ML confidence filter — all configurable, all transparent.
+This repository contains a conservative, testable trading engine for backtest, paper, MT5, and isolated Binance spot execution. The same `StrategyEngine` creates broker-independent `TradeSignal` objects in every mode. Broker adapters own data access, symbol constraints, sizing, and execution translation.
 
-> **Important:** This is a research and educational tool. Backtest results do not guarantee future performance. Paper mode is the safe default. Live trading requires explicit opt-in and your own Binance API credentials. Never risk money you cannot afford to lose.
+Real-money trading is disabled by default. Technical correctness and a clean backtest do not establish profitability.
 
----
+## Architecture
 
-## What it does
+- `core/`: typed candles, signals, orders, fills, positions, account state, closed-candle helpers, and the shared strategy engine.
+- `brokers/`: protocol plus MT5, Binance spot, and realistic paper adapters.
+- `risk/`: MT5 tick-value/lot sizing and shared equity-based risk controls.
+- `execution/`: protected-order execution, kill switch, and broker reconciliation.
+- `persistence/`: SQLite events, durable risk state, and idempotency records.
+- `backtest/`: event-driven simulation and artifact generation.
+- `ml/`: chronological splits and expanding-window evaluation; disabled by default.
+- `web_demo.py`: read-only dashboard backed by artifacts and SQLite only.
 
-- **Backtest** a rule-based strategy against historical OHLCV data
-- **Paper trade** in real-time using live market data — no real orders placed
-- **Simulate** entry signals using multi-timeframe logic (1H bias, 15m sweep, 5m entry)
-- **Score signals** with an optional sklearn ML confidence filter
-- **Log everything** — signals, trades, P&L, drawdown — to CSV and console
+## Windows installation
 
----
+1. Install Python 3.13 (64-bit).
+2. Install and open the 64-bit MetaTrader 5 terminal supplied by your broker.
+3. Log in manually in MT5 and enable algorithmic trading only when you are ready to run live.
+4. In PowerShell:
 
-## Strategy logic
-
-1. Fetch 1H, 15m, and 5m candles from Binance (via `ccxt`)
-2. Determine directional bias from the 1H EMA 200
-3. Detect a 15m liquidity sweep aligned with the bias
-4. Confirm entry on the 5m chart using CHoCH / BOS structure
-5. Size the position using configurable risk rules (1% risk per trade default)
-6. Optionally apply the ML confidence filter (trained from backtest results)
-7. Execute via paper executor (simulated) or live executor (real orders, opt-in only)
-
----
-
-## Project structure
-
-```text
-.
-├── backtest/      walk-forward backtesting engine
-├── data/          Binance/ccxt OHLCV data fetching
-├── execution/     paper and live order execution
-├── ml/            ML confidence filter and model persistence
-├── risk/          position sizing and trade construction
-├── strategy/      bias, liquidity sweep, and entry logic
-├── tests/         smoke tests
-├── config.py      all runtime configuration
-├── logger.py      structured console and trade logging
-└── main.py        CLI entry point
-```
-
----
-
-## Requirements
-
-- Python 3.10+
-- Internet access for live market data via `ccxt`
-- Binance API keys only required for live mode
-
----
-
-## Setup
-
-```bash
+```powershell
 python -m venv .venv
-source .venv/bin/activate          # Linux/Mac
-# .\.venv\Scripts\Activate.ps1    # Windows PowerShell
-
-pip install -r requirements.txt
-cp .env.example .env
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements-dev.txt
+Copy-Item .env.example .env
 ```
 
-Edit `.env` — for backtest and paper trading, API keys can be left blank:
+The official `MetaTrader5` Python package communicates with a local Windows terminal. It does not work as a headless Linux container integration.
 
-```env
-BINANCE_API_KEY=
-BINANCE_API_SECRET=
-USE_TESTNET=true
-MODE=paper
-SYMBOL=BTC/USDT
-ACCOUNT_BALANCE=10000
-BACKTEST_START=2024-01-01
-BACKTEST_END=2024-12-31
-INITIAL_BALANCE=10000
+## Configuration
+
+Fill these in `.env` without committing the file:
+
+```dotenv
+TRADING_MODE=paper
+BROKER=mt5
+MT5_LOGIN=
+MT5_PASSWORD=
+MT5_SERVER=
+MT5_TERMINAL_PATH=
+MT5_SYMBOL=EURUSD
+MT5_MAGIC_NUMBER=260727
+ENABLE_LIVE_TRADING=false
+I_UNDERSTAND_REAL_MONEY_RISK=false
 ```
 
----
+Risk, spread, slippage, latency, fee, database, and artifact settings are documented in `.env.example`. Invalid fractions, balances, modes, and broker names are rejected on import.
 
-## Usage
+## Commands
 
-```bash
-# Run a backtest (no API keys needed)
-python main.py --mode backtest
+Read-only MT5 validation (never places an order):
 
-# Backtest and retrain the ML filter
-python main.py --mode backtest --train-ml
-
-# Paper trading — live data, no real orders
-python main.py --mode paper
-
-# Paper trading without ML filter
-python main.py --mode paper --no-ml
-
-# Different symbol
-python main.py --mode paper --symbol ETH/USDT
-
-# Live trading — requires credentials + explicit env flag
-python main.py --mode live
+```powershell
+python main.py check --broker mt5 --symbol EURUSD
 ```
 
-Paper mode uses real-time data but never places real orders. Position state is saved in `state/paper_state.json` and closed trades are written to `trades.csv`.
+Backtest with actual broker history:
 
-### Local browser demo
-
-For a safe visual demo with deterministic local data, run:
-
-```bash
-python web_demo.py
+```powershell
+python main.py backtest --broker mt5 --symbol EURUSD --start 2024-01-01 --end 2024-12-31
 ```
 
-Then open `http://127.0.0.1:8765`. The dashboard, strategy breakdown, backtest report, and `/api/evaluate` endpoint use the real strategy and risk modules without API keys or exchange orders.
+Continuous MT5-data/paper-execution mode (Ctrl+C to stop), or one cycle for validation:
 
----
-
-## Risk configuration
-
-Key defaults in `config.py`:
-
-| Setting | Default | Description |
-| ------- | ------- | ----------- |
-| `RISK_PER_TRADE` | 1% | Max account risk per trade |
-| `MIN_RISK_REWARD` | 2.0 | Minimum R:R before entry |
-| `MAX_OPEN_POSITIONS` | 1 | Max concurrent positions |
-| `MAX_DAILY_LOSS_PCT` | 3% | Daily loss circuit breaker |
-| `MAX_DRAWDOWN_PCT` | 10% | Total drawdown circuit breaker |
-| `ML_CONFIDENCE_THRESHOLD` | 0.70 | Minimum ML score to take trade |
-
----
-
-## Tests
-
-```bash
-python -m unittest discover -s tests -v
+```powershell
+$env:TRADING_MODE = "paper"
+python main.py paper --broker mt5 --symbol EURUSD
+python main.py paper --broker mt5 --symbol EURUSD --once
 ```
 
----
+Live MT5 requires every gate:
 
-## Limitations and honest notes
+```powershell
+$env:TRADING_MODE = "live"
+$env:ENABLE_LIVE_TRADING = "true"
+$env:I_UNDERSTAND_REAL_MONEY_RISK = "true"
+python main.py check --broker mt5 --symbol EURUSD
+python main.py live --broker mt5 --symbol EURUSD
+python main.py live --broker mt5 --symbol EURUSD --once
+```
 
-- The ML filter is experimental. It is trained on backtest data and may not generalise.
-- Paper mode simulates fills at close price — real fills may differ due to slippage.
-- Live mode requires Binance spot. Short trades are not supported on spot.
-- Before using live capital: validate on the Binance testnet first, add order reconciliation, set up operator alerts, and run extended out-of-sample validation.
-- Past backtest performance does not predict future results.
+Run the actual-data dashboard:
 
----
+```powershell
+python main.py dashboard --port 8000
+```
 
-## License
+The dashboard displays `No data available.` until artifacts or persisted paper/live state exist.
 
-MIT
+Kill new entries without closing existing positions:
 
----
+```powershell
+python main.py kill-switch --cancel-pending
+python main.py reset-kill-switch
+```
 
-Made by FlegarTech. If this project helped you, you can [support development](https://paypal.me/TiniFlegar).
+## Verification
+
+```powershell
+python -m pytest -q
+python -m ruff check .
+python -m mypy core brokers risk execution persistence ml backtest main.py web_demo.py
+```
+
+Tests mock MT5 and never require a broker login or submit real orders.
+
+## Backtest artifacts
+
+Each run writes:
+
+- `artifacts/backtest_summary.json`
+- `artifacts/trades.csv`
+- `artifacts/equity_curve.csv`
+- `artifacts/drawdown_curve.csv`
+- `artifacts/monthly_returns.csv`
+- `artifacts/backtest_config_snapshot.json`
+
+The snapshot includes spread, commissions, slippage, latency, gap handling, and the conservative stop-first assumption for bars touching both exits.
+
+## Common errors
+
+- `MT5 initialize failed`: open the correct 64-bit terminal or set `MT5_TERMINAL_PATH`.
+- `MT5 login failed`: verify login, password, server spelling, and terminal connectivity. Credentials are never logged.
+- `symbol not found`: use the broker-specific Market Watch name (for example `EURUSD.a`) in `MT5_SYMBOL`.
+- `minimum volume would exceed allowed risk`: the trade is intentionally rejected; do not raise the risk merely to meet the minimum lot.
+- `stop violates broker minimum distance`: widen the strategy stop or use a compatible symbol; the adapter will not silently alter it.
+- live gate errors: all three settings (`TRADING_MODE`, `ENABLE_LIVE_TRADING`, and the risk acknowledgement) must be explicit.
+
+## Limitations
+
+- OHLC backtests cannot know tick order; simultaneous SL/TP touches use the conservative stop-first rule.
+- MT5 symbol/session behavior varies by broker and must be checked against that broker's demo account.
+- Binance support is isolated spot/long-only. Native OCO availability varies; failed protection triggers an immediate market-close attempt.
+- Reconciliation detects broker/local divergence, but broker deal-history enrichment is limited to the state returned by the adapter.
+- No strategy parameters were optimized during hardening. ML stays disabled unless chronological out-of-sample results improve return and do not worsen drawdown after costs.

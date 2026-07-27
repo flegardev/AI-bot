@@ -1,255 +1,198 @@
-"""
-main.py — Entry point for the trading bot.
+"""Production CLI. Real-money mode is disabled unless three independent gates pass."""
+from __future__ import annotations
 
-Usage:
-  python main.py                   # Uses MODE from .env (default: paper)
-  python main.py --mode backtest   # Run a backtest
-  python main.py --mode paper      # Paper trading (real-time, no real orders)
-  python main.py --mode live       # LIVE trading — real money!
-  python main.py --symbol ETH/USDT # Trade a different symbol
-"""
 import argparse
-import time
+import json
 import sys
-import io
-import signal
+import time
 from datetime import datetime, timezone
-
-# Force UTF-8 output so box/color characters don't crash on Windows cp1252
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 import config
 import logger
-from data.fetcher     import fetch_all_timeframes
-from strategy.bias    import get_bias_details
-from strategy.liquidity import detect_liquidity_sweep
-from strategy.entry   import get_entry_details
-from risk.manager     import build_trade
-from execution.executor import create_executor
-from ml.predictor     import get_predictor, MLPredictor
+from backtest.engine import BacktestEngine
+from brokers.binance import BinanceBrokerAdapter
+from brokers.mt5 import MT5BrokerAdapter
+from brokers.paper import PaperBrokerAdapter
+from core.models import PositionSizeRequest
+from core.strategy_engine import StrategyEngine
+from execution.reconciliation import ReconciliationService
+from execution.service import SafeExecutionService
+from persistence.store import TradingStore
+from risk.engine import RiskEngine, RiskLimits
 
 
-# ─── Argument Parsing ─────────────────────────────────────────────────────────
+def parser() -> argparse.ArgumentParser:
+    root = argparse.ArgumentParser(description="MT5-first safe trading bot")
+    commands = root.add_subparsers(dest="command", required=True)
+    for name in ("check", "backtest", "paper", "live"):
+        command = commands.add_parser(name)
+        command.add_argument("--broker", choices=["mt5", "binance"], default=config.SETTINGS.broker)
+        command.add_argument("--symbol", default=config.SYMBOL)
+    commands.choices["backtest"].add_argument("--start", default=config.BACKTEST_START)
+    commands.choices["backtest"].add_argument("--end", default=config.BACKTEST_END)
+    commands.choices["backtest"].add_argument("--train-ml", action="store_true")
+    commands.choices["paper"].add_argument("--once", action="store_true", help="Evaluate one completed-candle cycle")
+    commands.choices["live"].add_argument("--once", action="store_true", help="Evaluate one completed-candle cycle")
+    commands.add_parser("dashboard").add_argument("--port", type=int, default=8000)
+    kill = commands.add_parser("kill-switch")
+    kill.add_argument("--cancel-pending", action="store_true")
+    commands.add_parser("reset-kill-switch")
+    return root
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="Crypto Trading Bot")
-    parser.add_argument("--mode",   choices=["backtest", "paper", "live"],
-                        default=config.MODE)
-    parser.add_argument("--symbol", default=config.SYMBOL)
-    parser.add_argument("--no-ml",  action="store_true",
-                        help="Disable ML confidence filter")
-    parser.add_argument("--train-ml", action="store_true",
-                        help="Train/update the ML model after a backtest")
-    return parser.parse_args()
+
+def make_broker(name: str):
+    if name == "mt5":
+        return MT5BrokerAdapter()
+    return BinanceBrokerAdapter(sandbox=config.USE_TESTNET)
 
 
-# ─── Strategy Evaluation (shared by paper & live) ─────────────────────────────
-
-def evaluate_signal(symbol: str, use_ml: bool = True, account_balance: float | None = None) -> dict | None:
-    """
-    Run the full 3-layer strategy check on fresh data.
-
-    Returns a trade-ready dict (from risk.manager) or None if no signal.
-    """
-    # 1. Fetch all three timeframes
+def check(args: argparse.Namespace) -> int:
+    checks: dict[str, object] = {}
+    store = TradingStore(config.DATABASE_PATH)
+    checks["database_writable"] = store.record_event("dry_run_check", {}, mode="check") > 0
+    offset = datetime.now(timezone.utc).utcoffset()
+    checks["clock_utc"] = offset is not None and offset.total_seconds() == 0
     try:
-        data = fetch_all_timeframes(symbol)
-    except Exception as e:
-        logger.error(f"Data fetch failed: {e}")
-        return None
-
-    df_1h  = data[config.TF_BIAS]
-    df_15m = data[config.TF_LIQUIDITY]
-    df_5m  = data[config.TF_ENTRY]
-
-    # 2. Bias check (1H EMA 200)
-    bias = get_bias_details(df_1h)
-    if bias["bias"] is None:
-        logger.info("No bias — not enough 1H data yet.")
-        return None
-    logger.info(f"Bias: {bias['bias']}  |  Price: {bias['price']:.2f}  EMA200: {bias['ema_200']:.2f}  "
-                f"Dist: {bias['ema_distance_pct']:+.2%}")
-
-    # 3. Liquidity sweep check (15m)
-    sweep = detect_liquidity_sweep(df_15m)
-    if not sweep["swept"]:
-        logger.info("No liquidity sweep on 15m.")
-        return None
-
-    # Sweep must agree with bias
-    if bias["bias"] == "LONG"  and sweep["direction"] != "bullish":
-        logger.info(f"Sweep direction ({sweep['direction']}) conflicts with LONG bias — skip.")
-        return None
-    if bias["bias"] == "SHORT" and sweep["direction"] != "bearish":
-        logger.info(f"Sweep direction ({sweep['direction']}) conflicts with SHORT bias — skip.")
-        return None
-
-    logger.info(f"Liquidity sweep detected: {sweep['direction'].upper()}  "
-                f"level={sweep['level']:.4f}")
-
-    # 4. Entry confirmation (5m CHoCH / BOS)
-    entry_det = get_entry_details(df_5m, sweep["direction"])
-    if not entry_det["signal"]:
-        logger.info(f"No CHoCH / BOS on 5m yet — waiting ...")
-        return None
-
-    logger.info(f"Entry confirmed: {entry_det['type']}  "
-                f"RSI={entry_det['rsi_14']:.1f}  ATR={entry_det['atr_14']:.4f}")
-
-    # 5. Build trade parameters
-    direction = "LONG" if sweep["direction"] == "bullish" else "SHORT"
-    atr       = entry_det["atr_14"]
-    price     = entry_det["current_price"]
-
-    trade_params = build_trade(
-        direction       = direction,
-        entry_price     = price,
-        liquidity_level = sweep["level"],
-        atr             = atr,
-        account_balance = account_balance or config.ACCOUNT_BALANCE,
-    )
-
-    if trade_params is None:
-        return None   # Didn't meet R:R requirements
-
-    # 6. ML confidence filter
-    confidence = None
-    if use_ml and config.USE_ML_FILTER:
-        predictor = get_predictor()
-        features  = MLPredictor.extract_features(bias, entry_det, sweep["direction"], df_5m)
-        take_trade, confidence = predictor.is_confident(features)
-
-        if not take_trade:
-            logger.warning(
-                f"ML filter blocked trade — confidence {confidence:.1%} < "
-                f"threshold {config.ML_CONFIDENCE_THRESHOLD:.0%}"
-            )
-            return None
-        logger.success(f"ML filter passed — confidence: {confidence:.1%}")
-
-    trade_params["confidence"] = confidence
-    return trade_params
-
-
-# ─── Main Loop: Paper / Live ──────────────────────────────────────────────────
-
-def run_trading_loop(mode: str, symbol: str, use_ml: bool = True):
-    """
-    Main event loop for paper and live trading.
-    Polls for new 5m candles and runs the strategy on each.
-    """
-    executor = create_executor(mode)
-    logger.info(f"Bot started — mode={mode.upper()}  symbol={symbol}")
-    logger.info(f"ML filter: {'ON' if use_ml else 'OFF'}  "
-                f"Max trades/session: {config.MAX_TRADES_PER_SESSION}")
-
-    # If the ML filter is active but no model has been trained, every signal
-    # will be blocked (an untrained model returns neutral 0.5 confidence, which
-    # is below the threshold). Warn once at startup so this isn't mistaken for
-    # the strategy simply finding no setups.
-    if use_ml and config.USE_ML_FILTER and not get_predictor().is_trained:
-        logger.warning(
-            "ML filter is ON but no trained model was found "
-            f"({config.ML_MODEL_PATH}). No trades will be taken until you "
-            "train it (`--mode backtest --train-ml`) or disable it (`--no-ml`)."
+        broker = make_broker(args.broker)
+        if args.broker == "mt5":
+            checks.update(broker.check_connection(args.symbol))
+        else:
+            broker.connect()
+            checks["account"] = broker.get_account_state().__dict__
+            checks["symbol"] = broker.get_symbol_info(args.symbol).__dict__
+            checks["tick"] = not broker.get_candles(args.symbol, "5m").empty
+            checks["ok"] = True
+        info = broker.get_symbol_info(args.symbol)
+        checks["valid_lot_constraints"] = (
+            info.volume_min > 0 and info.volume_step > 0 and info.volume_max >= info.volume_min
         )
-    print()
+        candles = broker.get_candles(args.symbol, "1h")
+        checks["sufficient_history"] = len(candles) >= config.EMA_PERIOD
+        broker.disconnect()
+    except Exception as exc:
+        checks["ok"] = False
+        checks["error"] = str(exc)
+    print(json.dumps(checks, indent=2, default=str))
+    return 0 if checks.get("ok") else 1
 
-    POLL_SECONDS = 60  # Check every 60 seconds (1 minute)
-    last_candle_ts = None
 
+def run_cycle(args: argparse.Namespace, live: bool) -> int:
+    if live:
+        config.SETTINGS.assert_live_allowed()
+    market = make_broker(args.broker)
+    market.connect()
+    store = TradingStore(config.DATABASE_PATH)
+    execution_broker = market if live else PaperBrokerAdapter(store, config.INITIAL_BALANCE, market.get_symbol_info(args.symbol))
+    if not live:
+        execution_broker.connect()
+    reconciliation = ReconciliationService(execution_broker, store)
+    reconciliation.run()
+    frames = {
+        tf: market.get_candles(args.symbol, tf)
+        for tf in (config.TF_BIAS, config.TF_LIQUIDITY, config.TF_ENTRY)
+    }
+    as_of = datetime.now(timezone.utc)
+    signal = StrategyEngine().evaluate(
+        args.symbol, frames, as_of,
+        can_long=execution_broker.capabilities.long,
+        can_short=execution_broker.capabilities.short,
+    )
+    if not signal:
+        logger.info("No signal on the latest completed candles.")
+        execution_broker.disconnect()
+        if market is not execution_broker:
+            market.disconnect()
+        return 0
+    account = execution_broker.get_account_state()
+    info = execution_broker.get_symbol_info(args.symbol)
+    sizing_request = PositionSizeRequest(
+        signal.symbol, signal.direction, signal.entry, signal.stop_loss,
+        config.RISK_PER_TRADE, account, info
+    )
+    sizing = execution_broker.calculate_position_size(sizing_request)
+    limits = RiskLimits(
+        config.RISK_PER_TRADE, config.MAX_DAILY_LOSS_PCT, config.MAX_DRAWDOWN_PCT,
+        config.MAX_OPEN_POSITIONS, config.SETTINGS.max_portfolio_risk_pct,
+        config.SETTINGS.max_symbol_exposure_pct, config.SETTINGS.max_spread,
+        config.SETTINGS.max_slippage, config.SETTINGS.stale_price_seconds,
+    )
+    high_water = float(store.get_state("equity_high_water", account.equity))
+    high_water = max(high_water, account.equity)
+    store.set_state("equity_high_water", high_water)
+    start_day = float(store.get_state(f"start_equity_{as_of.date()}", account.equity))
+    store.set_state(f"start_equity_{as_of.date()}", start_day)
+    decision = RiskEngine(limits).evaluate(
+        signal, sizing_request, execution_broker.get_open_positions(),
+        equity_high_water=high_water, start_of_day_equity=start_day,
+        live_entries_enabled=True, sizing=sizing
+    )
+    result = SafeExecutionService(execution_broker, store).execute(signal, decision)
+    print(json.dumps(result.__dict__ if result else {"blocked": decision.reasons}, indent=2, default=str))
+    execution_broker.disconnect()
+    if market is not execution_broker:
+        market.disconnect()
+    return 0
+
+
+def run_loop(args: argparse.Namespace, live: bool) -> int:
+    if args.once:
+        return run_cycle(args, live)
+    logger.info("Continuous mode started; evaluating completed candles every 60 seconds.")
     try:
         while True:
-            now = datetime.now(timezone.utc)
-
-            # Update any open paper positions with current price
-            if mode == "paper" and executor.positions:
-                try:
-                    from data.fetcher import fetch_ohlcv
-                    latest = fetch_ohlcv(symbol, "1m", limit=2)
-                    current_price = latest.iloc[-1]["close"]
-                    executor.update_positions(current_price)
-                except Exception as e:
-                    logger.error(f"Failed to update positions: {e}")
-
-            # Only evaluate on a new 5m candle (avoid duplicate signals)
-            current_minute = now.minute
-            if current_minute % 5 == 0 and now.second < POLL_SECONDS:
-                candle_key = f"{now.hour}:{(now.minute // 5) * 5}"
-                if candle_key != last_candle_ts:
-                    last_candle_ts = candle_key
-                    logger.info(f"--- Checking {symbol} @ {now.strftime('%H:%M:%S')} UTC ---")
-
-                    if executor.can_trade():
-                        try:
-                            account_balance = executor.get_balance()
-                        except Exception as e:
-                            logger.error(f"Could not fetch account balance: {e}")
-                            account_balance = config.ACCOUNT_BALANCE
-                        signal = evaluate_signal(symbol, use_ml=use_ml, account_balance=account_balance)
-                        if signal:
-                            executor.open_position(signal, symbol, signal.get("confidence"))
-                    else:
-                        logger.warning(f"Session trade cap reached ({config.MAX_TRADES_PER_SESSION}). "
-                                       "Waiting for next session.")
-
-            time.sleep(POLL_SECONDS)
-
+            result = run_cycle(args, live)
+            if result:
+                return result
+            time.sleep(60)
     except KeyboardInterrupt:
-        print()
-        logger.info("Bot stopped by user.")
-        stats = executor.session_stats()
-        logger.session_summary(
-            stats["balance"], stats["trades"], stats["wins"], stats["pnl"]
-        )
-        sys.exit(0)
+        logger.info("Trading loop stopped by user.")
+        return 0
 
 
-# ─── Entry Point ──────────────────────────────────────────────────────────────
-
-def _raise_keyboard_interrupt(_signum, _frame):
-    """SIGTERM handler: re-route to the loop's graceful KeyboardInterrupt path."""
-    raise KeyboardInterrupt
-
-
-def main():
-    args = parse_args()
-    use_ml = not args.no_ml
-
-    print()
-    print("  +==========================================+")
-    print("  |      CRYPTO TRADING BOT  v1.0            |")
-    print("  |  1H Bias + 15m Liquidity + 5m CHoCH/BOS  |")
-    print("  +==========================================+")
-    print()
-
-    if args.mode == "backtest":
-        logger.info("Starting BACKTEST mode ...")
-        from backtest.engine import BacktestEngine
-        engine = BacktestEngine(symbol=args.symbol)
-        train_ml = args.train_ml or config.TRAIN_ML_AFTER_BACKTEST
-        results = engine.run(train_ml=train_ml)
-        if not train_ml:
-            logger.info("ML training skipped. Use --train-ml to update the model from this backtest.")
-
-    elif args.mode in ("paper", "live"):
-        if args.mode == "live":
-            print("  ⚠  WARNING: LIVE MODE — real orders will be placed!")
-            confirm = input("  Type 'YES' to continue: ").strip()
-            if confirm != "YES":
-                print("  Aborted.")
-                sys.exit(0)
-        # Treat SIGTERM (e.g. `docker stop` / orchestrator shutdown) like Ctrl-C so
-        # the trading loop unwinds through its graceful KeyboardInterrupt path
-        # (session summary, exit 0) instead of being terminated abruptly.
-        signal.signal(signal.SIGTERM, _raise_keyboard_interrupt)
-        run_trading_loop(args.mode, args.symbol, use_ml=use_ml)
-
+def main() -> int:
+    args = parser().parse_args()
+    if args.command == "check":
+        return check(args)
+    if args.command == "backtest":
+        config.BACKTEST_START, config.BACKTEST_END = args.start, args.end
+        data_broker = make_broker(args.broker)
+        data_broker.connect()
+        try:
+            start = datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc)
+            end = datetime.fromisoformat(args.end).replace(tzinfo=timezone.utc)
+            frames = {
+                timeframe: data_broker.get_candles(args.symbol, timeframe, start, end)
+                for timeframe in (config.TF_BIAS, config.TF_LIQUIDITY, config.TF_ENTRY)
+            }
+            symbol_info = data_broker.get_symbol_info(args.symbol)
+        finally:
+            data_broker.disconnect()
+        result = BacktestEngine(
+            args.symbol, capabilities=data_broker.capabilities,
+            symbol_info=symbol_info,
+        ).run(train_ml=args.train_ml, data=frames)
+        print(json.dumps(result["stats"], indent=2, default=str))
+        return 0
+    if args.command == "paper":
+        return run_loop(args, live=False)
+    if args.command == "live":
+        try:
+            return run_loop(args, live=True)
+        except RuntimeError as exc:
+            logger.error(str(exc))
+            return 2
+    if args.command == "dashboard":
+        import web_demo
+        web_demo.PORT = args.port
+        web_demo.main()
+        return 0
+    service = SafeExecutionService(PaperBrokerAdapter(TradingStore(config.DATABASE_PATH)), TradingStore(config.DATABASE_PATH))
+    if args.command == "kill-switch":
+        service.kill_switch(args.cancel_pending)
     else:
-        logger.error(f"Unknown mode: {args.mode}")
-        sys.exit(1)
+        service.reset_kill_switch()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

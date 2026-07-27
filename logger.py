@@ -1,110 +1,112 @@
-"""
-logger.py - Trade logging to CSV and colored console output.
-"""
-import csv
-import os
-from datetime import datetime
+"""Structured console and rotating-file logging without credential fields."""
+from __future__ import annotations
 
-from colorama import Fore, Style, init
+import csv
+import json
+import logging
+from datetime import datetime, timezone
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+from typing import Any
 
 import config
 
-init(autoreset=True)
-
+SENSITIVE = {"password", "secret", "api_key", "token", "login"}
 FIELDNAMES = [
-    "timestamp",
-    "symbol",
-    "direction",
-    "entry_price",
-    "stop_loss",
-    "take_profit",
-    "size",
-    "risk_amount",
-    "rr_ratio",
-    "exit_price",
-    "raw_exit_price",
-    "fees",
-    "pnl",
-    "pnl_pct",
-    "result",
-    "mode",
-    "entry_order_id",
-    "tp_order_id",
-    "sl_order_id",
-    "notes",
+    "timestamp", "symbol", "direction", "entry_price", "stop_loss", "take_profit",
+    "size", "risk_amount", "rr_ratio", "exit_price", "raw_exit_price", "fees",
+    "pnl", "pnl_pct", "result", "mode", "entry_order_id", "tp_order_id",
+    "sl_order_id", "notes",
 ]
 
 
-def _ensure_log_file():
-    """Create CSV with headers if it doesn't exist yet."""
-    if not os.path.exists(config.TRADE_LOG_FILE):
-        with open(config.TRADE_LOG_FILE, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
+class JsonFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "severity": record.levelname,
+            "event_type": getattr(record, "event_type", "application"),
+            "mode": getattr(record, "mode", ""),
+            "symbol": getattr(record, "symbol", ""),
+            "signal_id": getattr(record, "signal_id", ""),
+            "order_id": getattr(record, "order_id", ""),
+            "position_id": getattr(record, "position_id", ""),
+            "message": record.getMessage(),
+        }
+        if record.exc_info:
+            payload["exception"] = self.formatException(record.exc_info)
+        return json.dumps(payload)
+
+
+def _build(name: str, filename: str) -> logging.Logger:
+    instance = logging.getLogger(name)
+    if instance.handlers:
+        return instance
+    instance.setLevel(logging.INFO)
+    Path("logs").mkdir(exist_ok=True)
+    file_handler = RotatingFileHandler(
+        Path("logs") / filename, maxBytes=5_000_000, backupCount=5, encoding="utf-8"
+    )
+    file_handler.setFormatter(JsonFormatter())
+    instance.addHandler(file_handler)
+    return instance
+
+
+_logs = {
+    "application": _build("trading.application", "application.jsonl"),
+    "trades": _build("trading.trades", "trades.jsonl"),
+    "risk": _build("trading.risk", "risk-rejections.jsonl"),
+    "broker": _build("trading.broker", "broker-execution.jsonl"),
+    "critical": _build("trading.critical", "critical-incidents.jsonl"),
+}
+
+
+def event(message: str, *, channel: str = "application", level: int = logging.INFO, **context: Any) -> None:
+    safe = {k: v for k, v in context.items() if k.lower() not in SENSITIVE}
+    _logs[channel].log(level, message, extra=safe)
+
+
+def info(msg: str) -> None:
+    print(f"[INFO] {msg}")
+    event(msg)
+
+
+def success(msg: str) -> None:
+    print(f"[OK] {msg}")
+    event(msg)
+
+
+def warning(msg: str) -> None:
+    print(f"[WARN] {msg}")
+    event(msg, level=logging.WARNING)
+
+
+def error(msg: str) -> None:
+    print(f"[ERROR] {msg}")
+    event(msg, level=logging.ERROR)
+
+
+def log_trade(trade: dict[str, Any]) -> None:
+    path = Path(config.TRADE_LOG_FILE)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    new = not path.exists()
+    with path.open("a", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=FIELDNAMES)
+        if new:
             writer.writeheader()
+        writer.writerow({name: trade.get(name, "") for name in FIELDNAMES})
+    event("trade", channel="trades", **{k: trade.get(k, "") for k in ("mode", "symbol")})
 
 
-def log_trade(trade: dict):
-    """Append a trade row to the CSV log."""
-    _ensure_log_file()
-    row = {field: trade.get(field, "") for field in FIELDNAMES}
-    with open(config.TRADE_LOG_FILE, "a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
-        writer.writerow(row)
+def trade_signal(*args: Any, **kwargs: Any) -> None:
+    if args:
+        names = ("direction", "symbol", "entry", "sl", "tp", "size", "confidence")
+        kwargs.update(dict(zip(names, args, strict=False)))
+    info(
+        f"{kwargs.get('direction')} {kwargs.get('symbol')} entry={kwargs.get('entry')} "
+        f"SL={kwargs.get('sl')} TP={kwargs.get('tp')} size={kwargs.get('size')}"
+    )
 
 
-def info(msg: str):
-    ts = datetime.now().strftime("%H:%M:%S")
-    print(f"{Fore.CYAN}[{ts}] INFO  {Style.RESET_ALL}{msg}")
-
-
-def success(msg: str):
-    ts = datetime.now().strftime("%H:%M:%S")
-    print(f"{Fore.GREEN}[{ts}] OK    {Style.RESET_ALL}{msg}")
-
-
-def warning(msg: str):
-    ts = datetime.now().strftime("%H:%M:%S")
-    print(f"{Fore.YELLOW}[{ts}] WARN  {Style.RESET_ALL}{msg}")
-
-
-def error(msg: str):
-    ts = datetime.now().strftime("%H:%M:%S")
-    print(f"{Fore.RED}[{ts}] ERROR {Style.RESET_ALL}{msg}")
-
-
-def trade_signal(direction: str, symbol: str, entry: float, sl: float,
-                 tp: float, size: float, confidence: float | None = None):
-    """Pretty-print a trade signal."""
-    color = Fore.GREEN if direction == "LONG" else Fore.RED
-    ts = datetime.now().strftime("%H:%M:%S")
-    print()
-    print(f"{color}{'-' * 55}")
-    print(f"  TRADE SIGNAL  [{ts}]")
-    print(f"{'-' * 55}{Style.RESET_ALL}")
-    print(f"  Symbol    : {symbol}")
-    print(f"  Direction : {color}{direction}{Style.RESET_ALL}")
-    print(f"  Entry     : {entry:.4f}")
-    print(f"  Stop Loss : {Fore.RED}{sl:.4f}{Style.RESET_ALL}")
-    print(f"  Take Profit: {Fore.GREEN}{tp:.4f}{Style.RESET_ALL}")
-    print(f"  Size      : {size:.6f}")
-    if confidence is not None:
-        conf_color = Fore.GREEN if confidence >= config.ML_CONFIDENCE_THRESHOLD else Fore.YELLOW
-        print(f"  ML Conf   : {conf_color}{confidence:.1%}{Style.RESET_ALL}")
-    print(f"{color}{'-' * 55}{Style.RESET_ALL}")
-    print()
-
-
-def session_summary(balance: float, trades: int, wins: int, pnl: float):
-    """Print end-of-session summary."""
-    win_rate = (wins / trades * 100) if trades > 0 else 0
-    color = Fore.GREEN if pnl >= 0 else Fore.RED
-    print()
-    print(f"{Fore.CYAN}{'-' * 45}")
-    print("  SESSION SUMMARY")
-    print(f"{'-' * 45}{Style.RESET_ALL}")
-    print(f"  Balance   : ${balance:,.2f}")
-    print(f"  Trades    : {trades}")
-    print(f"  Win Rate  : {win_rate:.1f}%")
-    print(f"  PnL       : {color}${pnl:+,.2f}{Style.RESET_ALL}")
-    print(f"{Fore.CYAN}{'=' * 45}{Style.RESET_ALL}")
-    print()
+def session_summary(balance: float, trades: int, wins: int, pnl: float) -> None:
+    info(f"Session: balance={balance:.2f}, trades={trades}, wins={wins}, pnl={pnl:+.2f}")

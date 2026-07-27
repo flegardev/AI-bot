@@ -1,149 +1,214 @@
-"""
-ml/predictor.py - ML-based trade confidence filter.
-"""
+"""Chronological, schema-checked ML trade filter. Disabled by default."""
+from __future__ import annotations
+
 import os
 from datetime import datetime, timezone
+from typing import Any, cast
 
 import joblib
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, classification_report
-from sklearn.model_selection import train_test_split
+from sklearn.metrics import precision_score, recall_score, roc_auc_score
 from sklearn.preprocessing import StandardScaler
 
 import config
 import logger
 
-
 FEATURE_COLS = [
-    "ema_distance_pct",
-    "rsi_14",
-    "volume_ratio",
-    "atr_pct",
-    "sweep_direction",
-    "signal_type",
+    "ema_distance_pct", "rsi_14", "volume_ratio", "atr_pct",
+    "sweep_direction", "signal_type",
 ]
+MODEL_VERSION = "2.0-chronological"
+
+
+def chronological_split(
+    frame: pd.DataFrame, train_fraction: float = 0.6, validation_fraction: float = 0.2
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    if not 0 < train_fraction < 1 or not 0 <= validation_fraction < 1:
+        raise ValueError("invalid split fractions")
+    if train_fraction + validation_fraction >= 1:
+        raise ValueError("train + validation fractions must be below one")
+    ordered = frame.sort_values("timestamp", kind="stable").reset_index(drop=True)
+    train_end = int(len(ordered) * train_fraction)
+    validation_end = int(len(ordered) * (train_fraction + validation_fraction))
+    return ordered.iloc[:train_end], ordered.iloc[train_end:validation_end], ordered.iloc[validation_end:]
 
 
 class MLPredictor:
-    """Wraps a RandomForest classifier with a scaler."""
-
-    def __init__(self, model_path: str = None):
+    def __init__(self, model_path: str | None = None, enabled: bool | None = None):
         self.model_path = model_path or config.ML_MODEL_PATH
+        self.enabled = config.USE_ML_FILTER if enabled is None else enabled
         self.model: RandomForestClassifier | None = None
         self.scaler: StandardScaler | None = None
         self.is_trained = False
+        self.metadata: dict[str, Any] = {}
         self._try_load()
 
-    def _try_load(self):
-        """Load a previously saved model bundle if it exists."""
-        if os.path.exists(self.model_path):
-            try:
-                bundle = joblib.load(self.model_path)
-                self.model = bundle["model"]
-                self.scaler = bundle["scaler"]
-                self.is_trained = True
-                logger.info(f"ML model loaded from {self.model_path}")
-            except Exception as e:
-                self.model = None
-                self.scaler = None
-                self.is_trained = False
-                logger.warning(f"Could not load ML model from {self.model_path}: {e}")
-
-    def save(self, metadata: dict | None = None):
-        """Save the current model bundle."""
-        os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
-        joblib.dump({"model": self.model, "scaler": self.scaler, "metadata": metadata or {}}, self.model_path)
-        logger.success(f"ML model saved to {self.model_path}")
-
-    def train(self, records: list[dict]) -> dict:
-        """Train the model from backtest trade records."""
-        if len(records) < config.ML_MIN_SAMPLES:
-            logger.warning(
-                f"Only {len(records)} samples - need {config.ML_MIN_SAMPLES} to train ML model."
-            )
-            return {}
-
-        df = pd.DataFrame(records)
-        missing = [c for c in FEATURE_COLS if c not in df.columns]
-        if missing:
-            logger.warning(f"Missing ML features: {missing} - skipping training.")
-            return {}
-
-        X = df[FEATURE_COLS].values.astype(float)
-        y = (df["result"] == "win").astype(int).values
-        if len(set(y)) < 2:
-            logger.warning("ML training skipped - samples contain only one class.")
-            return {}
-        if min(np.bincount(y)) < 2:
-            logger.warning("ML training skipped - each class needs at least two samples.")
-            return {}
-
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.2, random_state=42, stratify=y
-        )
-
-        self.scaler = StandardScaler()
-        X_train = self.scaler.fit_transform(X_train)
-        X_test = self.scaler.transform(X_test)
-
-        self.model = RandomForestClassifier(
-            n_estimators=100,
-            max_depth=6,
-            min_samples_leaf=3,
-            random_state=42,
-            class_weight="balanced",
-        )
-        self.model.fit(X_train, y_train)
-        self.is_trained = True
-
-        y_pred = self.model.predict(X_test)
-        acc = accuracy_score(y_test, y_pred)
-        report = classification_report(y_test, y_pred, target_names=["loss", "win"], zero_division=0)
-
-        logger.success(f"ML model trained - accuracy: {acc:.1%}")
-        logger.info(f"\n{report}")
-
-        self.save({"trained_at": datetime.now(timezone.utc).isoformat(), "samples": len(records)})
-        return {"accuracy": acc, "report": report}
-
-    def predict(self, features: dict) -> float:
-        """Return win probability for a proposed trade."""
-        if not self.is_trained:
-            logger.warning("ML model not trained yet - returning 0.5 confidence.")
-            return 0.5
-
+    def _try_load(self) -> None:
+        if not os.path.exists(self.model_path):
+            return
         try:
-            x = np.array([[features.get(col, 0.0) for col in FEATURE_COLS]], dtype=float)
-            x_scaled = self.scaler.transform(x)
-            prob = self.model.predict_proba(x_scaled)[0][1]
-            return float(prob)
-        except Exception as e:
-            logger.error(f"ML prediction error: {e}")
-            return 0.5
+            bundle = joblib.load(self.model_path)
+            schema = bundle.get("feature_schema")
+            if schema != FEATURE_COLS:
+                raise ValueError("saved feature schema differs from serving schema")
+            self.model, self.scaler = bundle["model"], bundle["scaler"]
+            self.metadata = bundle.get("metadata", {})
+            self.is_trained = True
+        except Exception as exc:
+            self.model = self.scaler = None
+            self.is_trained = False
+            logger.warning(f"Could not load ML model from {self.model_path}: {exc}")
 
-    def is_confident(self, features: dict, threshold: float = None) -> tuple[bool, float]:
-        """Return (take_trade, confidence)."""
-        thr = threshold or config.ML_CONFIDENCE_THRESHOLD
-        conf = self.predict(features)
-        return conf >= thr, conf
+    def save(self, metadata: dict[str, Any] | None = None) -> None:
+        parent = os.path.dirname(self.model_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        joblib.dump({
+            "model": self.model, "scaler": self.scaler,
+            "feature_schema": FEATURE_COLS,
+            "metadata": metadata or self.metadata,
+            "model_version": MODEL_VERSION,
+        }, self.model_path)
 
     @staticmethod
-    def extract_features(
-        bias_details: dict,
-        entry_details: dict,
-        sweep_direction: str,
-        df_5m: "pd.DataFrame",
-    ) -> dict:
-        """Build the feature dict expected by predict()."""
-        vol_avg = df_5m["volume"].rolling(20).mean().iloc[-1]
-        vol_ratio = (df_5m["volume"].iloc[-1] / vol_avg) if pd.notna(vol_avg) and vol_avg > 0 else 1.0
+    def _prepare(frame: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+        missing = [column for column in FEATURE_COLS + ["result"] if column not in frame]
+        if missing:
+            raise ValueError(f"Missing ML columns: {missing}")
+        return frame[FEATURE_COLS].astype(float).to_numpy(), (frame["result"] == "win").astype(int).to_numpy()
 
+    def train(self, records: list[dict[str, Any]], save: bool = True) -> dict[str, Any]:
+        frame = pd.DataFrame(records)
+        if "timestamp" not in frame:
+            raise ValueError("Chronological ML training requires a timestamp")
+        if len(frame) < config.ML_MIN_SAMPLES:
+            logger.warning(f"Only {len(frame)} samples; need {config.ML_MIN_SAMPLES}.")
+            return {}
+        train, validation, test = chronological_split(frame)
+        x_train, y_train = self._prepare(train)
+        if len(np.unique(y_train)) < 2:
+            return {}
+        self.scaler = StandardScaler().fit(x_train)
+        self.model = RandomForestClassifier(
+            n_estimators=200, max_depth=6, min_samples_leaf=10,
+            random_state=42, class_weight="balanced_subsample", n_jobs=1
+        ).fit(self.scaler.transform(x_train), y_train)
+        self.is_trained = True
+        validation_metrics = self._evaluate_frame(validation)
+        test_metrics = self._evaluate_frame(test)
+        baseline = self._trading_metrics(test, np.ones(len(test), dtype=bool))
+        accepted = self._accepted_mask(test)
+        filtered = self._trading_metrics(test, accepted)
+        improved = (
+            filtered["net_return"] > baseline["net_return"]
+            and filtered["maximum_drawdown"] <= baseline["maximum_drawdown"]
+        )
+        self.enabled = bool(improved)
+        self.metadata = {
+            "trained_at": datetime.now(timezone.utc).isoformat(),
+            "model_version": MODEL_VERSION,
+            "feature_schema": FEATURE_COLS,
+            "samples": len(frame),
+            "train_end": str(train["timestamp"].iloc[-1]),
+            "test_start": str(test["timestamp"].iloc[0]),
+            "validation": validation_metrics,
+            "untouched_test": test_metrics,
+            "baseline_test": baseline,
+            "ml_test": filtered,
+            "enabled_after_evaluation": self.enabled,
+            "random_seed": 42,
+        }
+        if save:
+            self.save(self.metadata)
+        return self.metadata
+
+    def walk_forward(
+        self, records: list[dict[str, Any]], min_train_samples: int | None = None, step: int = 50
+    ) -> pd.DataFrame:
+        frame = pd.DataFrame(records).sort_values("timestamp").reset_index(drop=True)
+        minimum = min_train_samples or config.ML_MIN_SAMPLES
+        outputs = []
+        for start in range(minimum, len(frame), step):
+            train = frame.iloc[:start]
+            test = frame.iloc[start:start + step]
+            clone = MLPredictor(model_path=self.model_path + ".walk", enabled=True)
+            clone.model = clone.scaler = None
+            clone.is_trained = False
+            x_train, y_train = clone._prepare(train)
+            if len(np.unique(y_train)) < 2:
+                continue
+            clone.scaler = StandardScaler().fit(x_train)
+            clone.model = RandomForestClassifier(
+                n_estimators=100, max_depth=6, min_samples_leaf=10, random_state=42, n_jobs=1
+            ).fit(clone.scaler.transform(x_train), y_train)
+            clone.is_trained = True
+            rows = cast(list[dict[str, Any]], test.to_dict("records"))
+            probabilities = [clone.predict(row) for row in rows]
+            for timestamp, probability in zip(test["timestamp"], probabilities, strict=True):
+                outputs.append({"timestamp": timestamp, "probability": probability, "trained_through": train["timestamp"].iloc[-1]})
+        return pd.DataFrame(outputs)
+
+    def _evaluate_frame(self, frame: pd.DataFrame) -> dict[str, Any]:
+        if frame.empty:
+            return {}
+        _, y_true = self._prepare(frame)
+        rows = cast(list[dict[str, Any]], frame.to_dict("records"))
+        probabilities = np.array([self.predict(row) for row in rows])
+        y_pred = probabilities >= config.ML_CONFIDENCE_THRESHOLD
+        return {
+            "samples": len(frame),
+            "precision": float(precision_score(y_true, y_pred, zero_division=0)),
+            "recall": float(recall_score(y_true, y_pred, zero_division=0)),
+            "roc_auc": float(roc_auc_score(y_true, probabilities)) if len(np.unique(y_true)) > 1 else None,
+            "calibration_mae": float(abs(probabilities.mean() - y_true.mean())),
+            "accepted": int(y_pred.sum()),
+            "rejected": int((~y_pred).sum()),
+        }
+
+    def _accepted_mask(self, frame: pd.DataFrame) -> np.ndarray:
+        rows = cast(list[dict[str, Any]], frame.to_dict("records"))
+        return np.array([self.predict(row) >= config.ML_CONFIDENCE_THRESHOLD for row in rows])
+
+    @staticmethod
+    def _trading_metrics(frame: pd.DataFrame, mask: np.ndarray) -> dict[str, float]:
+        selected = frame.loc[mask]
+        pnl = selected.get("pnl", pd.Series(dtype=float)).astype(float)
+        gross_profit = pnl[pnl > 0].sum()
+        gross_loss = abs(pnl[pnl < 0].sum())
+        equity = pnl.cumsum()
+        drawdown = equity.cummax() - equity if not equity.empty else pd.Series([0.0])
+        return {
+            "accepted_trades": int(len(selected)),
+            "net_return": float(pnl.sum()),
+            "maximum_drawdown": float(drawdown.max()),
+            "profit_factor": float(gross_profit / gross_loss) if gross_loss else 0.0,
+        }
+
+    def predict(self, features: dict[str, Any]) -> float:
+        if not self.enabled or not self.is_trained or self.model is None or self.scaler is None:
+            return 0.5
+        missing = [column for column in FEATURE_COLS if column not in features]
+        if missing:
+            raise ValueError(f"Prediction missing feature(s): {missing}")
+        values = np.array([[float(features[column]) for column in FEATURE_COLS]])
+        return float(self.model.predict_proba(self.scaler.transform(values))[0][1])
+
+    def is_confident(self, features: dict[str, Any], threshold: float | None = None) -> tuple[bool, float]:
+        if not self.enabled:
+            return True, 0.5
+        probability = self.predict(features)
+        return probability >= (threshold or config.ML_CONFIDENCE_THRESHOLD), probability
+
+    @staticmethod
+    def extract_features(bias_details, entry_details, sweep_direction, df_5m):
+        average = df_5m["volume"].rolling(20).mean().iloc[-1]
+        ratio = df_5m["volume"].iloc[-1] / average if pd.notna(average) and average > 0 else 1.0
         return {
             "ema_distance_pct": bias_details.get("ema_distance_pct", 0.0),
             "rsi_14": entry_details.get("rsi_14", 50.0),
-            "volume_ratio": vol_ratio,
+            "volume_ratio": ratio,
             "atr_pct": entry_details.get("atr_pct", 0.0),
             "sweep_direction": 1 if sweep_direction == "bullish" else -1,
             "signal_type": 1 if entry_details.get("type") == "CHoCH" else 0,
