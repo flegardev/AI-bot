@@ -4,6 +4,7 @@ All sensitive values (API keys, etc.) are loaded from .env.
 Everything else is set here and imported across modules.
 """
 import os
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -82,3 +83,4 @@ BACKTEST_SLIPPAGE_PCT = _env_float("BACKTEST_SLIPPAGE_PCT", 0.0005)
 TRADE_LOG_FILE = "trades.csv"
 STATE_DIR = os.getenv("STATE_DIR", "state")
 PAPER_STATE_FILE = os.path.join(STATE_DIR, "paper_state.json")
+LIVE_STATE_FILE = os.path.join(STATE_DIR, "live_reconciliation.json")

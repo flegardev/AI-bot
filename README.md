@@ -1,6 +1,8 @@
+<p align="center"><strong>FLEGAR DEV</strong><br><sub>Software · IT · Full-stack</sub></p>
+
 # AI Trading Strategy Bot
 
-An open-source algorithmic trading research tool built in Python. Implements a multi-timeframe technical analysis strategy with backtesting, paper trading simulation, and an optional ML confidence filter — all configurable, all transparent.
+A Python algorithmic-trading research project built around a transparent, rule-based multi-timeframe strategy. It includes backtesting, persistent paper trading, a local browser demo, and an optional scikit-learn confidence filter.
 
 > **Important:** This is a research and educational tool. Backtest results do not guarantee future performance. Paper mode is the safe default. Live trading requires explicit opt-in and your own Binance API credentials. Never risk money you cannot afford to lose.
 
@@ -12,7 +14,7 @@ An open-source algorithmic trading research tool built in Python. Implements a m
 - **Paper trade** in real-time using live market data — no real orders placed
 - **Simulate** entry signals using multi-timeframe logic (1H bias, 15m sweep, 5m entry)
 - **Score signals** with an optional sklearn ML confidence filter
-- **Log everything** — signals, trades, P&L, drawdown — to CSV and console
+- **Record decisions** — signals and completed trades go to CSV/console; live actions also use a durable reconciliation journal
 
 ---
 
@@ -48,7 +50,7 @@ An open-source algorithmic trading research tool built in Python. Implements a m
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.13 or 3.14 (the CI matrix targets both; the container uses Python 3.14)
 - Internet access for live market data via `ccxt`
 - Binance API keys only required for live mode
 
@@ -61,7 +63,7 @@ python -m venv .venv
 source .venv/bin/activate          # Linux/Mac
 # .\.venv\Scripts\Activate.ps1    # Windows PowerShell
 
-pip install -r requirements.txt
+pip install -r requirements.lock
 cp .env.example .env
 ```
 
@@ -105,6 +107,20 @@ python main.py --mode live
 
 Paper mode uses real-time data but never places real orders. Position state is saved in `state/paper_state.json` and closed trades are written to `trades.csv`.
 
+`ACCOUNT_BALANCE` is a simulation/sizing input for backtest, paper, and local demo flows. Live mode sizes from a freshly verified exchange balance and stops if that balance cannot be read; it never substitutes the configured $10,000 demo default.
+
+### Live-mode safety boundary
+
+Live mode is disabled by default and should be treated as experimental. When explicitly enabled, it:
+
+- requires credentials, testnet while `REQUIRE_TESTNET_FOR_LIVE=true`, and an interactive `YES` confirmation;
+- fails closed when balance or open-order reconciliation cannot be verified;
+- journals entry/protection/compensation state in `state/live_reconciliation.json` before placing real orders;
+- uses Binance's atomic OCO order-list endpoint for paired take-profit and stop-loss protection when exposed by the pinned `ccxt` adapter; and
+- cancels any partial exit order and market-closes the newly acquired asset if an adapter without OCO rejects either protection leg. Incomplete compensation is persisted as `manual_reconciliation_required` and blocks restart.
+
+This is defense in depth, not a claim of production readiness. Exchange outages, fills, fees, race conditions, API changes, and operator actions still require independent monitoring and manual reconciliation.
+
 ### Local browser demo
 
 For a safe visual demo with deterministic local data, run:
@@ -138,22 +154,31 @@ Key defaults in `config.py`:
 python -m unittest discover -s tests -v
 ```
 
+The safety suite includes mocked balance, reconciliation, entry, take-profit, stop-loss, compensation, and atomic OCO paths. It does not submit exchange orders.
+
+---
+
+## ML model trust boundary
+
+`ml/model.pkl` is a Python `joblib`/pickle artifact. Loading it can execute code. Only load a model you trained locally or received through a trusted, integrity-controlled channel; never load an untrusted or downloaded `.pkl` file. The model is ignored by Git and is not included in this repository.
+
 ---
 
 ## Limitations and honest notes
 
 - The ML filter is experimental. It is trained on backtest data and may not generalise.
 - Paper mode simulates fills at close price — real fills may differ due to slippage.
-- Live mode requires Binance spot. Short trades are not supported on spot.
-- Before using live capital: validate on the Binance testnet first, add order reconciliation, set up operator alerts, and run extended out-of-sample validation.
+- Live mode targets Binance spot. Short trades are not supported.
+- Existing open orders block new entries, but the project does not continuously reconcile every external account action or provide operator alerts.
+- Before considering live capital: validate on Binance testnet, add independent monitoring, and run extended out-of-sample validation.
 - Past backtest performance does not predict future results.
 
 ---
 
-## License
+## License status
 
-MIT
+This repository currently has no `LICENSE` file. Do not assume permission to copy, modify, or redistribute it without authorization from the owner.
 
 ---
 
-Made by FlegarTech. If this project helped you, you can [support development](https://paypal.me/TiniFlegar).
+Built by [Tini Flegar](https://github.com/flegardev).

@@ -9,26 +9,29 @@ Usage:
   python main.py --symbol ETH/USDT # Trade a different symbol
 """
 import argparse
-import time
-import sys
-import io
+import math
 import signal
+import sys
+import time
 from datetime import datetime, timezone
-
-# Force UTF-8 output so box/color characters don't crash on Windows cp1252
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 import config
 import logger
-from data.fetcher     import fetch_all_timeframes
-from strategy.bias    import get_bias_details
+from data.fetcher import fetch_all_timeframes
+from execution.executor import LiveSafetyError, create_executor
+from ml.predictor import MLPredictor, get_predictor
+from risk.manager import build_trade
+from strategy.bias import get_bias_details
+from strategy.entry import get_entry_details
 from strategy.liquidity import detect_liquidity_sweep
-from strategy.entry   import get_entry_details
-from risk.manager     import build_trade
-from execution.executor import create_executor
-from ml.predictor     import get_predictor, MLPredictor
 
+
+def _configure_utf8_output() -> None:
+    """Keep CLI symbols safe on Windows without replacing shared stream objects."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
 
 # ─── Argument Parsing ─────────────────────────────────────────────────────────
 
@@ -91,7 +94,7 @@ def evaluate_signal(symbol: str, use_ml: bool = True, account_balance: float | N
     # 4. Entry confirmation (5m CHoCH / BOS)
     entry_det = get_entry_details(df_5m, sweep["direction"])
     if not entry_det["signal"]:
-        logger.info(f"No CHoCH / BOS on 5m yet — waiting ...")
+        logger.info("No CHoCH / BOS on 5m yet — waiting ...")
         return None
 
     logger.info(f"Entry confirmed: {entry_det['type']}  "
@@ -102,12 +105,17 @@ def evaluate_signal(symbol: str, use_ml: bool = True, account_balance: float | N
     atr       = entry_det["atr_14"]
     price     = entry_det["current_price"]
 
+    sizing_balance = config.ACCOUNT_BALANCE if account_balance is None else account_balance
+    if not math.isfinite(sizing_balance) or sizing_balance <= 0:
+        logger.error(f"Invalid account balance for position sizing: {sizing_balance!r}")
+        return None
+
     trade_params = build_trade(
         direction       = direction,
         entry_price     = price,
         liquidity_level = sweep["level"],
         atr             = atr,
-        account_balance = account_balance or config.ACCOUNT_BALANCE,
+        account_balance = sizing_balance,
     )
 
     if trade_params is None:
@@ -185,7 +193,16 @@ def run_trading_loop(mode: str, symbol: str, use_ml: bool = True):
                         try:
                             account_balance = executor.get_balance()
                         except Exception as e:
-                            logger.error(f"Could not fetch account balance: {e}")
+                            if mode == "live":
+                                logger.error(
+                                    "LIVE SAFETY BLOCK: account balance could not be verified; "
+                                    f"no configured/demo balance will be used ({e})."
+                                )
+                                break
+                            logger.warning(
+                                "Paper-only balance lookup failed; using the configured simulated "
+                                f"ACCOUNT_BALANCE ({e})."
+                            )
                             account_balance = config.ACCOUNT_BALANCE
                         signal = evaluate_signal(symbol, use_ml=use_ml, account_balance=account_balance)
                         if signal:
@@ -195,6 +212,9 @@ def run_trading_loop(mode: str, symbol: str, use_ml: bool = True):
                                        "Waiting for next session.")
 
             time.sleep(POLL_SECONDS)
+
+    except LiveSafetyError as e:
+        logger.error(f"Live trading stopped fail-closed: {e}")
 
     except KeyboardInterrupt:
         print()
@@ -214,6 +234,7 @@ def _raise_keyboard_interrupt(_signum, _frame):
 
 
 def main():
+    _configure_utf8_output()
     args = parse_args()
     use_ml = not args.no_ml
 
@@ -229,7 +250,7 @@ def main():
         from backtest.engine import BacktestEngine
         engine = BacktestEngine(symbol=args.symbol)
         train_ml = args.train_ml or config.TRAIN_ML_AFTER_BACKTEST
-        results = engine.run(train_ml=train_ml)
+        engine.run(train_ml=train_ml)
         if not train_ml:
             logger.info("ML training skipped. Use --train-ml to update the model from this backtest.")
 

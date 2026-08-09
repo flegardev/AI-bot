@@ -8,6 +8,7 @@ import config
 import logger
 from execution.executor import PaperTrader
 from ml.predictor import MLPredictor
+from web_demo import evaluate_demo, page_dashboard, page_strategy
 
 
 class PaperTraderSessionTests(unittest.TestCase):
@@ -44,6 +45,22 @@ class PredictorLoadTests(unittest.TestCase):
 
             self.assertFalse(predictor.is_trained)
             self.assertEqual(predictor.predict({}), 0.5)
+
+
+class WebDemoAccessibilityTests(unittest.TestCase):
+    def test_pages_expose_skip_navigation_and_current_section(self):
+        data = evaluate_demo()
+        dashboard = page_dashboard(data)
+        strategy = page_strategy(data)
+
+        self.assertIn('href="#main-content">Skip to main content</a>', dashboard)
+        self.assertIn('<nav aria-label="Demo sections">', dashboard)
+        self.assertIn('<main id="main-content" tabindex="-1">', dashboard)
+        self.assertIn('aria-current="page">Dashboard</a>', dashboard)
+        self.assertIn(
+            '<caption class="sr-only">Strategy evaluation layers and evidence</caption>',
+            strategy,
+        )
 
 
 if __name__ == "__main__":

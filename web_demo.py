@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from html import escape
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 import pandas as pd
@@ -20,7 +20,6 @@ from risk.manager import build_trade
 from strategy.bias import get_bias_details
 from strategy.entry import get_entry_details
 from strategy.liquidity import detect_liquidity_sweep
-
 
 HOST = "127.0.0.1"
 PORT = 8765
@@ -154,7 +153,8 @@ def _sparkline(values: list[float]) -> str:
 def _layout(title: str, active: str, body: str) -> str:
     links = [("Dashboard", "/"), ("Strategy", "/strategy"), ("Backtest", "/backtest"), ("API", "/api/evaluate")]
     nav = "".join(
-        f'<a class="{"active" if label == active else ""}" href="{href}">{label}</a>'
+        f'<a class="{"active" if label == active else ""}" href="{href}"'
+        f'{" aria-current=\"page\"" if label == active else ""}>{label}</a>'
         for label, href in links
     )
     active_label = escape(active)
@@ -185,6 +185,10 @@ def _layout(title: str, active: str, body: str) -> str:
       --shadow: 0 18px 70px rgba(0, 0, 0, .25);
     }}
     * {{ box-sizing: border-box; }}
+    .skip-link {{ position: fixed; left: 16px; top: 12px; z-index: 10; padding: 10px 14px; border-radius: 8px; background: white; color: #081015; transform: translateY(-180%); }}
+    .skip-link:focus {{ transform: translateY(0); }}
+    a:focus-visible {{ outline: 3px solid var(--accent-2); outline-offset: 3px; }}
+    .sr-only {{ position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }}
     body {{
       margin: 0;
       min-height: 100dvh;
@@ -254,20 +258,24 @@ def _layout(title: str, active: str, body: str) -> str:
       .pill-row {{ justify-content: flex-start; }}
       .grid, .grid.two, .grid.three {{ grid-template-columns: 1fr; }}
     }}
+    @media (prefers-reduced-motion: reduce) {{
+      *, *::before, *::after {{ scroll-behavior: auto !important; transition: none !important; }}
+    }}
   </style>
 </head>
 <body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
   <div class="shell">
     <aside>
       <div class="brand-row"><div class="mark">AI</div><div class="brand">AI Strategy Bot</div></div>
       <div class="tag">Local research dashboard backed by the Python strategy modules.</div>
-      <nav>{nav}</nav>
+      <nav aria-label="Demo sections">{nav}</nav>
       <div class="side-panel">
         <strong>Viewing {active_label}</strong>
         <p>Safe local demo. Uses deterministic candles, no API keys, and no exchange orders.</p>
       </div>
     </aside>
-    <main>{body}</main>
+    <main id="main-content" tabindex="-1">{body}</main>
   </div>
 </body>
 </html>"""
@@ -351,6 +359,7 @@ def page_strategy(data: dict) -> str:
         <div class="card">
           <h2>Signal Path</h2>
           <table>
+            <caption class="sr-only">Strategy evaluation layers and evidence</caption>
             <thead><tr><th>Layer</th><th>Result</th><th>Evidence</th></tr></thead>
             <tbody>
               <tr><td>1H bias</td><td class="accent">{data["bias"]["bias"]}</td><td>Price {_money(data["bias"]["price"])} vs EMA200 {_money(data["bias"]["ema_200"])}</td></tr>
@@ -400,6 +409,7 @@ def page_backtest(data: dict) -> str:
       <section class="card section-gap">
         <h2>Trade Decisions</h2>
         <table>
+          <caption class="sr-only">Deterministic demo trade decisions</caption>
           <thead><tr><th>Setup</th><th>Decision</th><th>P&L</th><th>R:R</th></tr></thead>
           <tbody>{rows}</tbody>
         </table>

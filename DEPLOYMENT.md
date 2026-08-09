@@ -6,14 +6,14 @@ requires explicit opt-in. There is no HTTP port or health endpoint — deploy it
 as a **background worker**, not a web service.
 
 ## Runtime
-- Python **3.13 or 3.14** (verified on both; image uses `python:3.14-slim`).
-- Dependencies pinned in `requirements.txt`; full transitive lock in `requirements.lock`.
+- Python **3.13 or 3.14** (targeted by CI; the image uses `python:3.14-slim`).
+- Direct dependencies are pinned in `requirements.txt`; the full transitive environment is pinned in `requirements.lock`.
 
 | Command | Purpose |
 |---------|---------|
 | `python -m venv .venv && . .venv/bin/activate` | Create env |
 | `pip install -r requirements.lock` | Reproducible install |
-| `python -m unittest discover -s tests` | Run tests (12, all pass) |
+| `python -m unittest discover -s tests -v` | Run the unit and live-safety mock tests |
 | `python main.py --mode backtest` | One-shot backtest |
 | `python main.py --mode paper` | Real-time paper trading (no real orders) — **default** |
 | `python main.py --mode live` | LIVE trading (real money; gated, see below) |
@@ -29,8 +29,8 @@ docker run -d --name ai-bot \
 # Backtest (one-shot):
 docker run --rm --env-file .env ai-bot --mode backtest
 ```
-Image runs as non-root (`appuser`), Python 3.14.6. Verified: builds, imports, all
-12 tests pass inside the container.
+The image is configured to run as non-root (`appuser`) on Python 3.14. Build and
+test the exact revision before promoting it.
 
 ## Recommended hosting (background worker)
 | Priority | Platform | Notes |
@@ -49,12 +49,15 @@ Do **not** deploy to Vercel/Netlify (no long-running process / no serverless fit
 | `LIVE_TRADING_ENABLED` | `false` | Must be `true` **and** console-confirmed to trade live. |
 | `REQUIRE_TESTNET_FOR_LIVE` | `true` | Safety gate before real-money trading. |
 | `MAX_DAILY_LOSS_PCT` / `MAX_DRAWDOWN_PCT` / `MAX_OPEN_POSITIONS` | 0.03 / 0.10 / 1 | Kill switches (enforced; test-covered). |
-| `STATE_DIR` | `state` (`/app/state` in Docker) | Persist paper positions/logs here. |
+| `ACCOUNT_BALANCE` | `10000` | Simulation/sizing input for backtest and paper flows only; never a live fallback. |
+| `STATE_DIR` | `state` (`/app/state` in Docker) | Persist paper state and `live_reconciliation.json` here. |
 
 ## Safety (verified by tests)
 - Live trading is **disabled by default** and requires `LIVE_TRADING_ENABLED=true`.
 - Live trading refuses to run unless testnet validation is satisfied when `REQUIRE_TESTNET_FOR_LIVE=true`.
-- Daily-loss and stop-loss-side guards block invalid/over-limit trades.
+- Live balance and open-order reconciliation failures stop execution; the configured simulation balance is never substituted.
+- Binance spot entries use atomic OCO exit protection when the pinned adapter exposes it. The fallback path cancels partial exits and closes the new fill; incomplete compensation is durably marked for manual reconciliation and blocks restart.
+- Daily-loss, drawdown, position-count, and session guards block invalid/over-limit trades.
 - Never commit real API keys. Use platform secret stores / `--env-file`.
 
 ## ML model — not shipped, train before relying on it
@@ -72,6 +75,8 @@ python main.py --mode backtest --train-ml
 # 2. Or run without the ML filter (rule-based signals only):
 python main.py --mode paper --no-ml
 ```
-Because the model is always trained on the pinned scikit-learn version, there is
-no cross-version load warning. If a model trained on a different version is ever
-loaded and fails, the predictor degrades gracefully to neutral confidence.
+`joblib` model files use Python pickle semantics and can execute code while
+loading. Only use a locally trained or otherwise trusted, integrity-controlled
+`ml/model.pkl`; never download and load an untrusted model. A version-incompatible
+model may fail to load and disable the filter, but that error handling is not a
+security sandbox.
