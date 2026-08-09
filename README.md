@@ -181,4 +181,5 @@ This repository currently has no `LICENSE` file. Do not assume permission to cop
 
 ---
 
-Built by [Tini Flegar](https://github.com/flegardev).
+Built by [Tini Flegar](https://github.com/flegardev) · Full-Stack Developer · IT & Finance ·
+[flegardev@gmail.com](mailto:flegardev@gmail.com)

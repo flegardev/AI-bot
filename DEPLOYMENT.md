@@ -29,8 +29,10 @@ docker run -d --name ai-bot \
 # Backtest (one-shot):
 docker run --rm --env-file .env ai-bot --mode backtest
 ```
-The image is configured to run as non-root (`appuser`) on Python 3.14. Build and
-test the exact revision before promoting it.
+The image is configured to run as non-root (`appuser`) on Python 3.14. `pip` and
+`setuptools` are removed after the locked dependencies install because package
+installation is not a runtime responsibility. CI builds the exact image and scans
+for fixed high/critical OS and Python findings before promotion.
 
 ## Recommended hosting (background worker)
 | Priority | Platform | Notes |
