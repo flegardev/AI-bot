@@ -183,3 +183,11 @@ This repository currently has no `LICENSE` file. Do not assume permission to cop
 
 Built by [Tini Flegar](https://github.com/flegardev) · Full-Stack Developer · IT & Finance ·
 [flegardev@gmail.com](mailto:flegardev@gmail.com)
+
+
+## Portfolio & Source Rights
+
+This project is part of the [Tini Flegar Software Engineering Portfolio](https://github.com/flegardev/flegartech-site).
+
+The source code is publicly visible for portfolio review and demonstration. For usage terms and rights, please see [PORTFOLIO_USE.md](PORTFOLIO_USE.md).
+
