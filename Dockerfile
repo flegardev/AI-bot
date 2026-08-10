@@ -10,6 +10,8 @@ WORKDIR /app
 # Install pinned dependencies first for better layer caching.
 COPY requirements.lock ./
 RUN pip install --no-cache-dir -r requirements.lock
+RUN python -m pip uninstall --yes pip setuptools \
+    && python -c "import ccxt, pandas, sklearn"
 
 # App source.
 COPY . .

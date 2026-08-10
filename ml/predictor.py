@@ -15,7 +15,6 @@ from sklearn.preprocessing import StandardScaler
 import config
 import logger
 
-
 FEATURE_COLS = [
     "ema_distance_pct",
     "rsi_14",
@@ -29,7 +28,7 @@ FEATURE_COLS = [
 class MLPredictor:
     """Wraps a RandomForest classifier with a scaler."""
 
-    def __init__(self, model_path: str = None):
+    def __init__(self, model_path: str | None = None):
         self.model_path = model_path or config.ML_MODEL_PATH
         self.model: RandomForestClassifier | None = None
         self.scaler: StandardScaler | None = None
@@ -37,7 +36,12 @@ class MLPredictor:
         self._try_load()
 
     def _try_load(self):
-        """Load a previously saved model bundle if it exists."""
+        """Load a trusted local model bundle if it exists.
+
+        joblib uses pickle semantics and can execute code while loading. The
+        configured artifact must be locally trained or otherwise trusted and
+        integrity-controlled; error handling here is not a security sandbox.
+        """
         if os.path.exists(self.model_path):
             try:
                 bundle = joblib.load(self.model_path)
@@ -110,7 +114,7 @@ class MLPredictor:
 
     def predict(self, features: dict) -> float:
         """Return win probability for a proposed trade."""
-        if not self.is_trained:
+        if not self.is_trained or self.model is None or self.scaler is None:
             logger.warning("ML model not trained yet - returning 0.5 confidence.")
             return 0.5
 
@@ -123,9 +127,11 @@ class MLPredictor:
             logger.error(f"ML prediction error: {e}")
             return 0.5
 
-    def is_confident(self, features: dict, threshold: float = None) -> tuple[bool, float]:
+    def is_confident(
+        self, features: dict, threshold: float | None = None
+    ) -> tuple[bool, float]:
         """Return (take_trade, confidence)."""
-        thr = threshold or config.ML_CONFIDENCE_THRESHOLD
+        thr = config.ML_CONFIDENCE_THRESHOLD if threshold is None else threshold
         conf = self.predict(features)
         return conf >= thr, conf
 
