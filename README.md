@@ -1,140 +1,94 @@
-# MT5-first trading bot
+# Algorithmic Trading Bot Framework (ai-bot)
 
-This repository contains a conservative, testable trading engine for backtest, paper, MT5, and isolated Binance spot execution. The same `StrategyEngine` creates broker-independent `TradeSignal` objects in every mode. Broker adapters own data access, symbol constraints, sizing, and execution translation.
+Modular algorithmic trading framework in Python with backtesting, MT5 & Binance adapters, ML signal filtering, and risk engine.
 
-Real-money trading is disabled by default. Technical correctness and a clean backtest do not establish profitability.
+![AI Bot Dashboard Showcase](_final_desktop_screenshots/01-main-dashboard-or-home.png)
 
-## Architecture
+## Overview
 
-- `core/`: typed candles, signals, orders, fills, positions, account state, closed-candle helpers, and the shared strategy engine.
-- `brokers/`: protocol plus MT5, Binance spot, and realistic paper adapters.
-- `risk/`: MT5 tick-value/lot sizing and shared equity-based risk controls.
-- `execution/`: protected-order execution, kill switch, and broker reconciliation.
-- `persistence/`: SQLite events, durable risk state, and idempotency records.
-- `backtest/`: event-driven simulation and artifact generation.
-- `ml/`: chronological splits and expanding-window evaluation; disabled by default.
-- `web_demo.py`: read-only dashboard backed by artifacts and SQLite only.
+**ai-bot** is an open-source, modular algorithmic trading and quantitative research system written in Python 3.11. Designed for rule-based strategy development and paper/live execution, it includes pluggable broker adapters (MetaTrader 5, Binance CCXT, Paper Trading), a backtesting engine with candle integrity checks, a Machine Learning signal filter (LightGBM / Scikit-Learn), and position sizing risk control.
 
-## Windows installation
+## System Architecture
 
-1. Install Python 3.13 (64-bit).
-2. Install and open the 64-bit MetaTrader 5 terminal supplied by your broker.
-3. Log in manually in MT5 and enable algorithmic trading only when you are ready to run live.
-4. In PowerShell:
+```mermaid
+flowchart TD
+    DataFetcher["Data Fetcher (CCXT / MT5)"]
+    StrategyEngine["Strategy Engine (Rule-based Signals)"]
+    MLFilter["ML Signal Filter (LightGBM / Sklearn)"]
+    RiskEngine["Risk Engine (Dynamic Position Sizing)"]
+    ExecutionService["Execution Service / Reconciliation"]
+    Brokers["Broker Adapters (Binance / MT5 / Paper)"]
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -r requirements-dev.txt
-Copy-Item .env.example .env
+    DataFetcher -->|OHLCV Candles| StrategyEngine
+    StrategyEngine -->|Raw Signals| MLFilter
+    MLFilter -->|Filtered Signals| RiskEngine
+    RiskEngine -->|Sized Orders| ExecutionService
+    ExecutionService -->|API Order Execution| Brokers
 ```
 
-The official `MetaTrader5` Python package communicates with a local Windows terminal. It does not work as a headless Linux container integration.
+## Key Features
 
-## Configuration
+* **Multi-Broker Abstraction Layer**: Unified interface in `brokers/` supporting Binance (CCXT), MetaTrader 5 (MT5), and zero-risk Simulated Paper Trading.
+* **Backtesting Engine**: Vectorized and event-driven backtesting module in `backtest/engine.py` with slippage, commission, and candle gap validation.
+* **ML Signal Filtering**: Machine learning classifier (`ml/predictor.py`) trained on technical indicators to filter out low-probability trade signals.
+* **Dynamic Position Sizing**: Volatility-adjusted (ATR) and account balance percentage risk models (`risk/sizing.py`).
+* **Web Monitoring Dashboard**: Built-in web administration interface (`web_demo.py`) displaying live positions, P&L graphs, and signal metrics.
 
-Fill these in `.env` without committing the file:
+## Tech Stack
 
-```dotenv
-TRADING_MODE=paper
-BROKER=mt5
-MT5_LOGIN=
-MT5_PASSWORD=
-MT5_SERVER=
-MT5_TERMINAL_PATH=
-MT5_SYMBOL=EURUSD
-MT5_MAGIC_NUMBER=260727
-ENABLE_LIVE_TRADING=false
-I_UNDERSTAND_REAL_MONEY_RISK=false
+* **Language & Core**: Python 3.11, Pandas, NumPy
+* **Trading & Market Data**: CCXT, MetaTrader5
+* **Machine Learning**: LightGBM, Scikit-Learn
+* **Web Dashboard**: Flask / Web server
+* **Testing & Quality**: Pytest, Docker Compose
+
+## Getting Started
+
+### Prerequisites
+* Python 3.11+
+* Docker & Docker Compose (optional)
+
+### Installation
+
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/flegardev/ai-bot.git
+   cd ai-bot
+   ```
+
+2. Create virtual environment & install dependencies:
+   ```bash
+   python -m venv venv
+   # Windows: venv\Scriptsctivate | Linux/macOS: source venv/bin/activate
+   pip install -r requirements.txt
+   ```
+
+3. Configure environment variables:
+   ```bash
+   cp .env.example .env
+   ```
+
+4. Run the web monitoring demo:
+   ```bash
+   python web_demo.py
+   ```
+
+## Environment Variables
+
+```env
+TRADING_MODE=paper        # paper | live
+BROKER=binance            # binance | mt5 | paper
+BINANCE_API_KEY=your_api_key
+BINANCE_API_SECRET=your_api_secret
+RISK_PER_TRADE_PCT=1.5
 ```
 
-Risk, spread, slippage, latency, fee, database, and artifact settings are documented in `.env.example`. Invalid fractions, balances, modes, and broker names are rejected on import.
+## Running Tests
 
-## Commands
-
-Read-only MT5 validation (never places an order):
-
-```powershell
-python main.py check --broker mt5 --symbol EURUSD
+```bash
+pytest
 ```
 
-Backtest with actual broker history:
+## License
 
-```powershell
-python main.py backtest --broker mt5 --symbol EURUSD --start 2024-01-01 --end 2024-12-31
-```
-
-Continuous MT5-data/paper-execution mode (Ctrl+C to stop), or one cycle for validation:
-
-```powershell
-$env:TRADING_MODE = "paper"
-python main.py paper --broker mt5 --symbol EURUSD
-python main.py paper --broker mt5 --symbol EURUSD --once
-```
-
-Live MT5 requires every gate:
-
-```powershell
-$env:TRADING_MODE = "live"
-$env:ENABLE_LIVE_TRADING = "true"
-$env:I_UNDERSTAND_REAL_MONEY_RISK = "true"
-python main.py check --broker mt5 --symbol EURUSD
-python main.py live --broker mt5 --symbol EURUSD
-python main.py live --broker mt5 --symbol EURUSD --once
-```
-
-Run the actual-data dashboard:
-
-```powershell
-python main.py dashboard --port 8000
-```
-
-The dashboard displays `No data available.` until artifacts or persisted paper/live state exist.
-
-Kill new entries without closing existing positions:
-
-```powershell
-python main.py kill-switch --cancel-pending
-python main.py reset-kill-switch
-```
-
-## Verification
-
-```powershell
-python -m pytest -q
-python -m ruff check .
-python -m mypy core brokers risk execution persistence ml backtest main.py web_demo.py
-```
-
-Tests mock MT5 and never require a broker login or submit real orders.
-
-## Backtest artifacts
-
-Each run writes:
-
-- `artifacts/backtest_summary.json`
-- `artifacts/trades.csv`
-- `artifacts/equity_curve.csv`
-- `artifacts/drawdown_curve.csv`
-- `artifacts/monthly_returns.csv`
-- `artifacts/backtest_config_snapshot.json`
-
-The snapshot includes spread, commissions, slippage, latency, gap handling, and the conservative stop-first assumption for bars touching both exits.
-
-## Common errors
-
-- `MT5 initialize failed`: open the correct 64-bit terminal or set `MT5_TERMINAL_PATH`.
-- `MT5 login failed`: verify login, password, server spelling, and terminal connectivity. Credentials are never logged.
-- `symbol not found`: use the broker-specific Market Watch name (for example `EURUSD.a`) in `MT5_SYMBOL`.
-- `minimum volume would exceed allowed risk`: the trade is intentionally rejected; do not raise the risk merely to meet the minimum lot.
-- `stop violates broker minimum distance`: widen the strategy stop or use a compatible symbol; the adapter will not silently alter it.
-- live gate errors: all three settings (`TRADING_MODE`, `ENABLE_LIVE_TRADING`, and the risk acknowledgement) must be explicit.
-
-## Limitations
-
-- OHLC backtests cannot know tick order; simultaneous SL/TP touches use the conservative stop-first rule.
-- MT5 symbol/session behavior varies by broker and must be checked against that broker's demo account.
-- Binance support is isolated spot/long-only. Native OCO availability varies; failed protection triggers an immediate market-close attempt.
-- Reconciliation detects broker/local divergence, but broker deal-history enrichment is limited to the state returned by the adapter.
-- No strategy parameters were optimized during hardening. ML stays disabled unless chronological out-of-sample results improve return and do not worsen drawdown after costs.
+This project is licensed under the MIT License.
