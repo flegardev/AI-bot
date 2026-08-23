@@ -5,10 +5,13 @@ Returns clean pandas DataFrames with columns:
   timestamp, open, high, low, close, volume
 """
 import time
+
 import ccxt
 import pandas as pd
+
 import config
 import logger
+from core.timeframes import filter_closed_candles
 
 
 def create_exchange(include_credentials: bool = False, sandbox: bool = False) -> ccxt.binance:
@@ -108,7 +111,7 @@ def fetch_ohlcv(
     df = df[~df.index.duplicated(keep="last")]
     df.sort_index(inplace=True)
 
-    return df
+    return filter_closed_candles(df, timeframe)
 
 
 def fetch_all_timeframes(symbol: str) -> dict[str, pd.DataFrame]:
@@ -184,4 +187,4 @@ def fetch_historical_range(
     df = df[df.index < pd.Timestamp(end, tz="UTC")]
 
     logger.success(f"  Downloaded {len(df)} candles for {timeframe}")
-    return df
+    return filter_closed_candles(df, timeframe, pd.Timestamp(end, tz="UTC"))

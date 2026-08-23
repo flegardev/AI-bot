@@ -9,8 +9,6 @@ import math
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import ClassVar
-from uuid import uuid4
 
 import config
 import logger

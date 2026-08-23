@@ -12,9 +12,8 @@ Return values:
   None      — no sweep on the last candle
 """
 import pandas as pd
-import numpy as np
-import config
 
+import config
 
 # ─── Swing Detection ─────────────────────────────────────────────────────────
 
@@ -128,7 +127,7 @@ def detect_liquidity_sweep(
 
     # ── Bearish sweep: wick takes out equal HIGHS, closes below them ──────────
     equal_highs = find_equal_highs(swing_highs)
-    for (level, bar_a, bar_b) in reversed(equal_highs):   # Most recent first
+    for (level, _bar_a, _bar_b) in reversed(equal_highs):   # Most recent first
         wick_above  = last["high"] > level           # Wick pierced the level
         close_below = last["close"] < level          # But closed below it
         if wick_above and close_below:
@@ -136,7 +135,7 @@ def detect_liquidity_sweep(
 
     # ── Bullish sweep: wick takes out equal LOWS, closes above them ───────────
     equal_lows = find_equal_lows(swing_lows)
-    for (level, bar_a, bar_b) in reversed(equal_lows):
+    for (level, _bar_a, _bar_b) in reversed(equal_lows):
         wick_below  = last["low"] < level            # Wick pierced the level
         close_above = last["close"] > level          # But closed above it
         if wick_below and close_above:
