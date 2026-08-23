@@ -52,7 +52,7 @@ flowchart TD
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/flegardev/ai-bot.git
+   git clone https://github.com/flegardev/AI-bot.git
    cd ai-bot
    ```
 
