@@ -1,94 +1,201 @@
 # Algorithmic Trading Bot Framework (ai-bot)
 
-Modular algorithmic trading framework in Python with backtesting, MT5 & Binance adapters, ML signal filtering, and risk engine.
+A modular algorithmic trading and quantitative backtesting framework in Python featuring MetaTrader 5 and Binance broker adapters, Scikit-Learn ML signal filtering, multi-gate execution safety, and local dashboard monitoring.
 
-![AI Bot Dashboard Showcase](_final_desktop_screenshots/01-main-dashboard-or-home.png)
+![AI Bot Trading Dashboard](./_final_desktop_screenshots/01-main-dashboard-or-home.png)
 
 ## Overview
 
-**ai-bot** is an open-source, modular algorithmic trading and quantitative research system written in Python 3.11. Designed for rule-based strategy development and paper/live execution, it includes pluggable broker adapters (MetaTrader 5, Binance CCXT, Paper Trading), a backtesting engine with candle integrity checks, a Machine Learning signal filter (LightGBM / Scikit-Learn), and position sizing risk control.
+**ai-bot** is an algorithmic trading framework designed for quantitative strategy research, historical backtesting, and rule-based execution. Written in Python 3.13, the architecture decouples market data ingestion, technical signal generation, machine learning probability scoring, risk calculation, and order execution.
 
-## System Architecture
+The framework incorporates risk management controls including dynamic volatility position sizing, maximum drawdown triggers, spread/slippage thresholds, and an emergency software kill-switch. Real-money live trading requires three independent opt-in gates to eliminate unintended execution.
 
-```mermaid
-flowchart TD
-    DataFetcher["Data Fetcher (CCXT / MT5)"]
-    StrategyEngine["Strategy Engine (Rule-based Signals)"]
-    MLFilter["ML Signal Filter (LightGBM / Sklearn)"]
-    RiskEngine["Risk Engine (Dynamic Position Sizing)"]
-    ExecutionService["Execution Service / Reconciliation"]
-    Brokers["Broker Adapters (Binance / MT5 / Paper)"]
+## Features
 
-    DataFetcher -->|OHLCV Candles| StrategyEngine
-    StrategyEngine -->|Raw Signals| MLFilter
-    MLFilter -->|Filtered Signals| RiskEngine
-    RiskEngine -->|Sized Orders| ExecutionService
-    ExecutionService -->|API Order Execution| Brokers
-```
+- **Multi-Broker Adapters**: Pluggable adapters for MetaTrader 5 (Windows desktop terminal), Binance (CCXT REST API with Testnet support), and deterministic in-memory paper trading.
+- **Rule-Based & ML Signal Pipeline**: Combines technical market indicators (trend filters, breakout logic, EMA bias) with Scikit-Learn classification models to score trade execution probability.
+- **Historical Backtesting Engine**: Replays historical OHLCV candle datasets with slippage simulation, spread models, equity curve tracking, and trade log exports.
+- **Multi-Tier Risk Controls**: Volatility-adjusted position sizing, max daily loss limits, trailing drawdown boundaries, max concurrent positions, and stale price detection.
+- **Software Emergency Kill-Switch**: Software-level emergency trading kill-switch (`python main.py kill-switch`) that cancels pending orders and locks the execution state.
+- **Live Execution Safety Gates**: Requires three explicit confirmations (`ENABLE_LIVE_TRADING=true`, `I_UNDERSTAND_REAL_MONEY_RISK=true`, and CLI `--mode live`) before placing live broker orders.
+- **Local Analytics Dashboard**: Built-in monitoring server (`python main.py dashboard`) visualizing recent trades, open positions, balance curves, and logs.
 
-## Key Features
+## Screenshots
 
-* **Multi-Broker Abstraction Layer**: Unified interface in `brokers/` supporting Binance (CCXT), MetaTrader 5 (MT5), and zero-risk Simulated Paper Trading.
-* **Backtesting Engine**: Vectorized and event-driven backtesting module in `backtest/engine.py` with slippage, commission, and candle gap validation.
-* **ML Signal Filtering**: Machine learning classifier (`ml/predictor.py`) trained on technical indicators to filter out low-probability trade signals.
-* **Dynamic Position Sizing**: Volatility-adjusted (ATR) and account balance percentage risk models (`risk/sizing.py`).
-* **Web Monitoring Dashboard**: Built-in web administration interface (`web_demo.py`) displaying live positions, P&L graphs, and signal metrics.
+| Trading Dashboard | Strategy Backtest & Analytics | Risk Controls & Positions |
+|:---:|:---:|:---:|
+| ![Dashboard](./_final_desktop_screenshots/01-main-dashboard-or-home.png) | ![Backtest Analytics](./_final_desktop_screenshots/02-key-feature.png) | ![Positions & Detail](./_final_desktop_screenshots/03-detail-or-secondary-screen.png) |
 
 ## Tech Stack
 
-* **Language & Core**: Python 3.11, Pandas, NumPy
-* **Trading & Market Data**: CCXT, MetaTrader5
-* **Machine Learning**: LightGBM, Scikit-Learn
-* **Web Dashboard**: Flask / Web server
-* **Testing & Quality**: Pytest, Docker Compose
+- **Core Runtime**: Python 3.13+ (Asyncio, Typing, Dataclasses)
+- **Quantitative & ML Libraries**: Pandas, NumPy, Scikit-Learn, Joblib
+- **Brokers & Exchange APIs**: CCXT (Binance REST), MetaTrader5 Python API
+- **Utilities & UI**: Python-Dotenv, Colorama, Native HTTP Dashboard
+- **Quality & DevOps**: Pytest, Unittest, Ruff, Mypy, Docker
 
-## Getting Started
+## Project Structure
+
+```text
+ai-bot/
+├── backtest/                   # Historical simulation engine & metrics
+├── brokers/                    # MT5, Binance (CCXT), and Paper broker adapters
+├── core/                       # Strategy engine, signal models, and candle validators
+├── data/                       # Market data fetchers and OHLCV stores
+├── execution/                  # Order router and balance reconciliation
+├── ml/                         # Scikit-learn signal classification models & training
+├── persistence/                # SQLite/JSON state store for orders & executions
+├── risk/                       # Position sizing, drawdown limits, and circuit breakers
+├── strategy/                   # Concrete trading strategy implementations
+├── tests/                      # Unit, mock broker, and safety test suites
+├── _final_desktop_screenshots/ # Production UI screenshots
+├── config.py                   # Centralized configuration & settings
+├── Dockerfile                  # Worker container specification
+├── main.py                     # Primary production CLI entrypoint
+├── requirements.txt            # Direct pinned dependencies
+└── web_demo.py                 # Embedded dashboard server
+```
+
+## Installation
 
 ### Prerequisites
-* Python 3.11+
-* Docker & Docker Compose (optional)
 
-### Installation
+- Python 3.13+ (or Python 3.14)
+- (Optional) MetaTrader 5 terminal installed on Windows (for MT5 broker integration)
 
-1. Clone the repository:
+### Setup
+
+1. **Clone the repository:**
    ```bash
-   git clone https://github.com/flegardev/AI-bot.git
+   git clone https://github.com/flegardev/ai-bot.git
    cd ai-bot
    ```
 
-2. Create virtual environment & install dependencies:
+2. **Create and activate a virtual environment:**
    ```bash
-   python -m venv venv
-   # Windows: venv\Scriptsctivate | Linux/macOS: source venv/bin/activate
+   python -m venv .venv
+   # Windows (PowerShell):
+   .venv\Scripts\Activate.ps1
+   # Linux / macOS:
+   source .venv/bin/activate
+   ```
+
+3. **Install dependencies:**
+   ```bash
    pip install -r requirements.txt
    ```
 
-3. Configure environment variables:
+4. **Configure environment variables:**
    ```bash
    cp .env.example .env
    ```
 
-4. Run the web monitoring demo:
-   ```bash
-   python web_demo.py
-   ```
+## Configuration
 
-## Environment Variables
+Configure trading rules and API credentials in `.env`:
 
 ```env
-TRADING_MODE=paper        # paper | live
-BROKER=binance            # binance | mt5 | paper
-BINANCE_API_KEY=your_api_key
-BINANCE_API_SECRET=your_api_secret
-RISK_PER_TRADE_PCT=1.5
+# Trading Mode: 'paper', 'backtest', or 'live'
+TRADING_MODE=paper
+BROKER=mt5
+ENABLE_LIVE_TRADING=false
+I_UNDERSTAND_REAL_MONEY_RISK=false
+
+# MetaTrader 5 (Windows)
+MT5_LOGIN=
+MT5_PASSWORD=
+MT5_SERVER=
+MT5_TERMINAL_PATH=
+MT5_SYMBOL=EURUSD
+MT5_MAGIC_NUMBER=260727
+
+# Binance / CCXT
+BINANCE_API_KEY=your_binance_api_key
+BINANCE_API_SECRET=your_binance_api_secret
+USE_TESTNET=true
+
+# Risk Engine Thresholds
+RISK_PER_TRADE=0.01
+MIN_RISK_REWARD=2.0
+MAX_OPEN_POSITIONS=1
+MAX_DAILY_LOSS_PCT=0.03
+MAX_DRAWDOWN_PCT=0.10
+MAX_PORTFOLIO_RISK_PCT=0.03
+MAX_SPREAD=0.0005
+MAX_SLIPPAGE=0.0005
+STALE_PRICE_SECONDS=120
+
+# Backtest Window
+BACKTEST_START=2024-01-01
+BACKTEST_END=2024-12-31
 ```
 
-## Running Tests
+## Usage
+
+The framework is operated via the CLI (`main.py`):
+
+### 1. Verify Configuration & Environment
+```bash
+python main.py check
+```
+
+### 2. Run a Historical Backtest
+```bash
+# Run backtest over configured dates
+python main.py backtest --start 2024-01-01 --end 2024-12-31
+
+# Run backtest and train the ML filter
+python main.py backtest --train-ml
+```
+
+### 3. Run Real-Time Paper Trading (Safe Default)
+```bash
+# Continuous execution loop
+python main.py paper --broker mt5 --symbol EURUSD
+
+# Single completed-candle cycle
+python main.py paper --once
+```
+
+### 4. Launch Analytics Dashboard
+```bash
+python main.py dashboard --port 8000
+```
+Visit [http://localhost:8000](http://localhost:8000) to view active positions and performance charts.
+
+### 5. Software Emergency Kill-Switch
+```bash
+# Halt trading and cancel pending orders
+python main.py kill-switch --cancel-pending
+
+# Reset kill-switch and resume operational state
+python main.py reset-kill-switch
+```
+
+## Testing & Quality Assurance
 
 ```bash
+# Run unit and risk simulation tests
 pytest
+
+# Alternative test runner
+python -m unittest discover -s tests -v
+
+# Code quality and formatting checks
+ruff check .
+mypy .
 ```
 
-## License
+## Docker Deployment
 
-This project is licensed under the MIT License.
+Run the trading bot in paper mode as an isolated background container:
+
+```bash
+docker build -t ai-bot .
+docker run -d --name ai-bot --env-file .env -v ai-bot-state:/app/state ai-bot
+```
+
+## License & Portfolio Notice
+
+Copyright (c) 2026 Tini Flegar. All rights reserved.
+Source code is published for portfolio inspection and demonstration purposes.
