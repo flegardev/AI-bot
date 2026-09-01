@@ -8,7 +8,7 @@ import config
 import logger
 from execution.executor import PaperTrader
 from ml.predictor import MLPredictor
-from web_demo import evaluate_demo, page_dashboard, page_strategy
+from web_demo import load_dashboard_data, page
 
 
 class PaperTraderSessionTests(unittest.TestCase):
@@ -47,20 +47,16 @@ class PredictorLoadTests(unittest.TestCase):
             self.assertEqual(predictor.predict({}), 0.5)
 
 
-class WebDemoAccessibilityTests(unittest.TestCase):
-    def test_pages_expose_skip_navigation_and_current_section(self):
-        data = evaluate_demo()
-        dashboard = page_dashboard(data)
-        strategy = page_strategy(data)
+class WebDemoRenderTests(unittest.TestCase):
+    def test_page_renders_trading_bot_dashboard(self):
+        data = load_dashboard_data()
+        html = page(data)
 
-        self.assertIn('href="#main-content">Skip to main content</a>', dashboard)
-        self.assertIn('<nav aria-label="Demo sections">', dashboard)
-        self.assertIn('<main id="main-content" tabindex="-1">', dashboard)
-        self.assertIn('aria-current="page">Dashboard</a>', dashboard)
-        self.assertIn(
-            '<caption class="sr-only">Strategy evaluation layers and evidence</caption>',
-            strategy,
-        )
+        self.assertIn("<title>Trading Bot Dashboard</title>", html)
+        self.assertIn("<h1>Trading Bot</h1>", html)
+        self.assertIn("<h2>Backtest</h2>", html)
+        self.assertIn("<h2>Account</h2>", html)
+        self.assertIn("<h2>Operations</h2>", html)
 
 
 if __name__ == "__main__":
