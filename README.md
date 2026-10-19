@@ -225,4 +225,3 @@ docker run -d --name ai-bot --env-file .env -v ai-bot-state:/app/state ai-bot
 
 Copyright (c) 2026 Tini Flegar. All rights reserved.
 Source code is published for portfolio inspection and demonstration purposes.
-

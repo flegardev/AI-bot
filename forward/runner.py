@@ -38,7 +38,7 @@ def single_writer(path):
             handle.flush()
         handle.seek(0)
         if os.name == "nt":
-            import msvcrt
+            msvcrt = import_module("msvcrt")
             msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
         else:
             fcntl = import_module("fcntl")

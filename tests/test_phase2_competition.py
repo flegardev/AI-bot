@@ -52,3 +52,4 @@ def test_real_competition_on_synthetic_flat_data_has_no_winner(tmp_path):
     assert result["experiments"] <= result["budget"]
     ledger = (Path(result["output"]) / "experiments.jsonl").read_text()
     assert '"no_trade"' in ledger and '"smc_baseline_v1"' in ledger
+    assert all(json.loads(line)["status"] == "completed" for line in ledger.splitlines())

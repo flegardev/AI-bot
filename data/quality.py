@@ -66,14 +66,16 @@ def inspect_frame(frame: pd.DataFrame, timeframe: str, start=None, end=None,
         issues.append("timestamps not aligned to timeframe")
     begin = _utc(start) if start is not None else clean.index[0]
     stop = _utc(end) if end is not None else clean.index[-1] + step
-    expected = pd.date_range(begin.ceil(step), stop - step, freq=step)
+    # Include a candle opened before begin if it closes during this window.
+    # Higher-timeframe context can otherwise disappear at non-hourly split boundaries.
+    expected = pd.date_range(begin.floor(step), stop.floor(step) - step, freq=step)
     expected = expected[market_hours(expected, calendar)]
-    available = clean.index[(clean.index >= begin) & (clean.index + step <= stop)]
+    available = clean.index[(clean.index >= begin.floor(step)) & (clean.index + step <= stop)]
     missing = expected.difference(pd.DatetimeIndex(available))
-    coverage = 1 - len(missing) / len(expected) if len(expected) else 0.0
+    coverage = 1 - len(missing) / len(expected) if len(expected) else 1.0
     if len(missing):
         issues.append(f"{len(missing)} missing expected bars")
-    if not len(expected):
+    if stop <= begin:
         issues.append("empty evaluation window")
     warmup = int((clean.index + step <= begin).sum())
     if warmup < min_warmup:
@@ -105,4 +107,8 @@ def inspect_dataset(frames, start=None, end=None, calendar="24/7", require_warmu
     reports = {tf: inspect_frame(frames.get(tf, pd.DataFrame()), tf, start, end, calendar,
                                minimum if require_warmup else 0)
                for tf, minimum in minimums.items()}
+    entry = reports[config.TF_ENTRY]
+    if entry.get("evaluation_rows", 0) == 0:
+        entry["ok"] = False
+        entry["issues"] = [*entry["issues"], "empty entry evaluation window"]
     return {"ok": all(report["ok"] for report in reports.values()), "timeframes": reports}

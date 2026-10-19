@@ -104,6 +104,8 @@ def competition(frames, symbol, info, start, end, output, calendar="fx_ny", *,
             validations.append((spec, result))
     viable = [(spec, result) for spec, result in validations
               if result["stats"]["net_return"] > 0 and result["stats"]["total_trades"] >= min_trades]
+    if not validations:
+        raise DataQualityError(f"all validation trials failed; inspect {root / 'experiments.jsonl'}")
     selected = max(viable, key=lambda item: item[1]["stats"]["net_return"])[0] if viable else None
     registry = Path(output) / "holdout_registry.jsonl"
     fingerprint = hashlib.sha256(json.dumps(protocol["data_digests"], sort_keys=True).encode()).hexdigest()
