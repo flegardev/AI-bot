@@ -36,11 +36,11 @@ from risk.engine import RiskEngine, RiskLimits
 def parser():
     root = argparse.ArgumentParser(description="MT5 trading research and guarded execution")
     commands = root.add_subparsers(dest="command", required=True)
-    for name in ("check", "backtest", "research", "compete", "ml-compare", "cache-data", "paper", "live"):
+    for name in ("check", "backtest", "research", "compete", "ml-compare", "ai-research", "cache-data", "paper", "live"):
         command = commands.add_parser(name)
         command.add_argument("--broker", choices=["mt5", "binance"], default=config.SETTINGS.broker)
         command.add_argument("--symbol", default=config.SYMBOL)
-    for name in ("backtest", "research", "compete", "ml-compare", "cache-data"):
+    for name in ("backtest", "research", "compete", "ml-compare", "ai-research", "cache-data"):
         command = commands.choices[name]
         command.add_argument("--start", default=config.BACKTEST_START)
         command.add_argument("--end", default=config.BACKTEST_END)
@@ -50,6 +50,11 @@ def parser():
     commands.choices["backtest"].add_argument("--train-ml", action="store_true")
     commands.choices["research"].add_argument("--folds", type=int, default=3)
     commands.choices["compete"].add_argument("--budget", type=int, default=48)
+    research_agent = commands.choices["ai-research"]
+    research_agent.add_argument("--budget", type=int, default=48)
+    research_agent.add_argument("--proposals")
+    research_agent.add_argument("--ollama-model")
+    research_agent.add_argument("--ollama-url", default="http://127.0.0.1:11434")
     for name in ("paper", "live"):
         commands.choices[name].add_argument("--once", action="store_true")
     commands.add_parser("dashboard").add_argument("--port", type=int, default=8000)
@@ -303,7 +308,7 @@ def main():
         return 0
     if args.command == "check":
         return check(args)
-    if args.command in {"backtest", "research", "compete", "ml-compare", "cache-data"}:
+    if args.command in {"backtest", "research", "compete", "ml-compare", "ai-research", "cache-data"}:
         broker = None
         try:
             start_value, end_value = pd.Timestamp(args.start), pd.Timestamp(args.end)
@@ -344,7 +349,12 @@ def main():
                 (target / "data_quality.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
                 print(json.dumps(report, indent=2))
                 return 0 if report["ok"] else 2
-            if args.command == "ml-compare":
+            if args.command == "ai-research":
+                from ai_research.workflow import run_workflow
+                result = run_workflow(frames, args.symbol, info, start, end, args.output, args.calendar,
+                    budget=args.budget, proposal_file=args.proposals, model=args.ollama_model, endpoint=args.ollama_url)
+                print(json.dumps(result, indent=2, default=str))
+            elif args.command == "ml-compare":
                 from backtest.ml_comparison import compare_ml
                 result = compare_ml(frames, args.symbol, info, start, end, args.output, args.calendar)
                 print(json.dumps(result, indent=2, default=str))
