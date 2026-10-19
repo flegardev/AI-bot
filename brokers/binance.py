@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import pandas as pd
 
 from brokers.base import BrokerCapabilities, BrokerError
 from core.models import AccountState, Direction, OrderRequest, OrderResult, OrderStatus, Position, SymbolInfo
+from core.quotes import Quote
 from core.timeframes import filter_closed_candles
 from data.fetcher import create_exchange
 
@@ -55,6 +56,13 @@ class BinanceBrokerAdapter:
         total = float(balance.get("total", {}).get("USDT", 0.0))
         free = float(balance.get("free", {}).get("USDT", 0.0))
         return AccountState(total, total, free, max(0.0, total - free))
+
+    def get_quote(self, symbol: str) -> Quote:
+        tick = self.exchange.fetch_ticker(symbol)
+        if not tick.get("timestamp"):
+            raise BrokerError("exchange quote lacks a timestamp")
+        return Quote(float(tick["bid"]), float(tick["ask"]),
+                     datetime.fromtimestamp(tick["timestamp"] / 1000, timezone.utc))
 
     def get_symbol_info(self, symbol: str) -> SymbolInfo:
         market = self.exchange.market(symbol)

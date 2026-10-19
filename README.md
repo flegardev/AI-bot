@@ -2,6 +2,27 @@
 
 A modular algorithmic trading and quantitative backtesting framework in Python featuring MetaTrader 5 and Binance broker adapters, Scikit-Learn ML signal filtering, multi-gate execution safety, and local dashboard monitoring.
 
+## Paper research platform
+
+See [RESEARCH_GUIDE.md](RESEARCH_GUIDE.md) for runnable commands and
+[the experiment protocol](docs/EXPERIMENT_PROTOCOL.md) for data gates, unchanged SMC comparisons,
+bounded strategy search, three calibrated chronological models, constrained hypothesis automation,
+and frozen forward paper evaluations. [Primary-source references](docs/RESEARCH_REFERENCES.md) record the
+engineering patterns adopted and their limits.
+
+Run the complete offline software demonstration in a new output directory:
+
+```powershell
+python scripts/reproduce.py --output artifacts/offline-evidence-001
+```
+
+This writes explicitly synthetic data, diagnostic/benchmark/ML/agent/forward artifacts, logs and hashes.
+Its artificial classifier results are software evidence only. Market research must pass its own data checks.
+
+Profitability is unproven. A passing software test or a profitable historical sample does not approve live trading.
+Research commands block incomplete history. Entry execution blocks stale, future, malformed, or overly wide quotes.
+The guarded live command currently supports MT5 only. Binance remains available for research and paper data.
+
 ![AI Bot Trading Dashboard](./_final_desktop_screenshots/01-main-dashboard-or-home.png)
 
 ## Overview
@@ -17,7 +38,7 @@ The framework incorporates risk management controls including dynamic volatility
 - **Historical Backtesting Engine**: Replays historical OHLCV candle datasets with slippage simulation, spread models, equity curve tracking, and trade log exports.
 - **Multi-Tier Risk Controls**: Volatility-adjusted position sizing, max daily loss limits, trailing drawdown boundaries, max concurrent positions, and stale price detection.
 - **Software Emergency Kill-Switch**: Software-level emergency trading kill-switch (`python main.py kill-switch`) that cancels pending orders and locks the execution state.
-- **Live Execution Safety Gates**: Requires three explicit confirmations (`ENABLE_LIVE_TRADING=true`, `I_UNDERSTAND_REAL_MONEY_RISK=true`, and CLI `--mode live`) before placing live broker orders.
+- **Live Execution Safety Gates**: Requires three explicit confirmations (`ENABLE_LIVE_TRADING=true`, `I_UNDERSTAND_REAL_MONEY_RISK=true`, and CLI `live` subcommand) before placing live broker orders.
 - **Local Analytics Dashboard**: Built-in monitoring server (`python main.py dashboard`) visualizing recent trades, open positions, balance curves, and logs.
 
 ## Screenshots
@@ -28,7 +49,7 @@ The framework incorporates risk management controls including dynamic volatility
 
 ## Tech Stack
 
-- **Core Runtime**: Python 3.13+ (Asyncio, Typing, Dataclasses)
+- **Core Runtime**: Python 3.12 or 3.13 (Typing, Dataclasses)
 - **Quantitative & ML Libraries**: Pandas, NumPy, Scikit-Learn, Joblib
 - **Brokers & Exchange APIs**: CCXT (Binance REST), MetaTrader5 Python API
 - **Utilities & UI**: Python-Dotenv, Colorama, Native HTTP Dashboard
@@ -38,11 +59,13 @@ The framework incorporates risk management controls including dynamic volatility
 
 ```text
 ai-bot/
+├── ai_research/                # Constrained hypotheses, deterministic runner, critic, registry
 ├── backtest/                   # Historical simulation engine & metrics
 ├── brokers/                    # MT5, Binance (CCXT), and Paper broker adapters
 ├── core/                       # Strategy engine, signal models, and candle validators
 ├── data/                       # Market data fetchers and OHLCV stores
 ├── execution/                  # Order router and balance reconciliation
+├── forward/                    # Frozen prospective paper-only observation loop
 ├── ml/                         # Scikit-learn signal classification models & training
 ├── persistence/                # SQLite/JSON state store for orders & executions
 ├── risk/                       # Position sizing, drawdown limits, and circuit breakers
@@ -60,7 +83,7 @@ ai-bot/
 
 ### Prerequisites
 
-- Python 3.13+ (or Python 3.14)
+- Python 3.12 or 3.13 (Python 3.14 is blocked by the pinned coincurve source-build dependency)
 - (Optional) MetaTrader 5 terminal installed on Windows (for MT5 broker integration)
 
 ### Setup
@@ -82,7 +105,7 @@ ai-bot/
 
 3. **Install dependencies:**
    ```bash
-   pip install -r requirements.txt
+   pip install -r requirements.lock
    ```
 
 4. **Configure environment variables:**
@@ -147,6 +170,9 @@ python main.py backtest --start 2024-01-01 --end 2024-12-31
 # Run backtest and train the ML filter
 python main.py backtest --train-ml
 ```
+
+`--train-ml` now trains from feature-complete, unfiltered rule trades when there are enough samples.
+It reports insufficient samples explicitly. It does not invent trades or bypass the data-quality gate.
 
 ### 3. Run Real-Time Paper Trading (Safe Default)
 ```bash

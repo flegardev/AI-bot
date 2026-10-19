@@ -59,7 +59,7 @@ def get_bias_details(df_1h: pd.DataFrame) -> dict:
     dist_pct  = distance / ema_value
 
     return {
-        "bias":             "LONG" if price > ema_value else "SHORT",
+        "bias":             "LONG" if price > ema_value else "SHORT" if price < ema_value else None,
         "price":            price,
         "ema_200":          ema_value,
         "ema_distance":     distance,

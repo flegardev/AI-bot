@@ -1,4 +1,4 @@
-# Direct dependencies, pinned to versions verified on Python 3.13/3.14
+# Direct dependencies for supported Python 3.12/3.13
 # (all unit tests pass; every module imports cleanly).
 # For a fully reproducible install (transitive deps too), use:
 #   pip install -r requirements.lock

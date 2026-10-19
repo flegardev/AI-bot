@@ -1,6 +1,8 @@
+import hashlib
 import json
 
 import pandas as pd
+import pytest
 
 from backtest.engine import BacktestEngine
 
@@ -23,9 +25,18 @@ def test_backtest_writes_all_required_artifacts_without_fake_trades(tmp_path):
     expected = {
         "backtest_summary.json", "trades.csv", "equity_curve.csv",
         "drawdown_curve.csv", "monthly_returns.csv", "backtest_config_snapshot.json",
+        "data_quality.json", "strategy_diagnostics.json",
+        "signal_decisions.csv", "signal_decisions.json", "artifacts_manifest.json", "summary.md",
+        "regime_report.csv", "run_status.json", "exposure_matched_references.json",
     }
     assert expected == {path.name for path in tmp_path.iterdir()}
     assert result["trades"] == []
     summary = json.loads((tmp_path / "backtest_summary.json").read_text())
     assert summary["total_trades"] == 0
     assert summary["assumptions"]["simultaneous_sl_tp"] == "stop_first"
+    manifest = json.loads((tmp_path / "artifacts_manifest.json").read_text())
+    for filename, digest in manifest["files"].items():
+        assert hashlib.sha256((tmp_path / filename).read_bytes()).hexdigest() == digest
+    assert json.loads((tmp_path / "run_status.json").read_text())["status"] == "completed"
+    with pytest.raises(ValueError, match="fresh output"):
+        BacktestEngine("EURUSD", artifact_dir=tmp_path).run(data=data)

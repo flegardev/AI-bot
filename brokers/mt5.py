@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import math
 import os
 from datetime import datetime, timezone
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 import config
@@ -18,7 +20,9 @@ from core.models import (
     PositionSizeRequest,
     SymbolInfo,
 )
+from core.quotes import Quote
 from core.timeframes import filter_closed_candles
+from data.contracts import MarketDataContract
 from risk.sizing import calculate_mt5_position_size
 
 TIMEFRAMES = {
@@ -40,6 +44,16 @@ class MT5BrokerAdapter:
         self.mt5: Any = mt5_module
         self.connected = False
         self.magic = int(os.getenv("MT5_MAGIC_NUMBER", "260727"))
+        self.source_timezone = os.getenv("MT5_SOURCE_TIMEZONE", "UTC")
+
+    def _source_timestamp(self, raw_seconds):
+        stamp = pd.Timestamp(raw_seconds, unit="s")
+        return stamp.tz_localize(self.source_timezone, ambiguous="raise", nonexistent="raise").tz_convert("UTC")
+
+    def _request_time(self, timestamp):
+        if timestamp is None or self.source_timezone == "UTC":
+            return timestamp
+        return pd.Timestamp(timestamp).tz_convert(self.source_timezone).tz_localize(None).tz_localize("UTC").to_pydatetime()
 
     def connect(self) -> None:
         path = os.getenv("MT5_TERMINAL_PATH") or None
@@ -90,7 +104,7 @@ class MT5BrokerAdapter:
             raise BrokerError(f"Unsupported MT5 timeframe: {timeframe}")
         tf = getattr(self.mt5, attr)
         if start:
-            rates = self.mt5.copy_rates_range(symbol, tf, start, end or datetime.now(timezone.utc))
+            rates = self.mt5.copy_rates_range(symbol, tf, self._request_time(start), self._request_time(end or datetime.now(timezone.utc)))
         else:
             rates = self.mt5.copy_rates_from_pos(symbol, tf, 0, 1000)
         if rates is None:
@@ -98,9 +112,22 @@ class MT5BrokerAdapter:
         df = pd.DataFrame(rates)
         if df.empty:
             return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
-        df["timestamp"] = pd.to_datetime(df["time"], unit="s", utc=True)
+        raw_times = pd.DatetimeIndex(pd.to_datetime(df["time"], unit="s"))
+        df["timestamp"] = raw_times.tz_localize(self.source_timezone, ambiguous="raise", nonexistent="raise").tz_convert("UTC")
         df = df.set_index("timestamp").rename(columns={"tick_volume": "volume"})
-        return filter_closed_candles(df[["open", "high", "low", "close", "volume"]], timeframe)
+        if df.index.has_duplicates or not df.index.is_monotonic_increasing:
+            raise BrokerError("MT5 returned duplicate or unordered candles")
+        values = df[["open", "high", "low", "close", "volume"]].to_numpy(dtype=float)
+        if not np.isfinite(values).all() or (values[:, :4] <= 0).any() or (values[:, 4] < 0).any():
+            raise BrokerError("MT5 returned invalid OHLCV")
+        output = filter_closed_candles(df[["open", "high", "low", "close", "volume"]], timeframe,
+                                      min(end, datetime.now(timezone.utc)) if end else None)
+        if start is not None:
+            output = output.loc[output.index >= pd.Timestamp(start)]
+        output.attrs["data_contract"] = MarketDataContract(
+            source="MT5 terminal", timestamp_basis="utc", price_basis="bid", calendar="fx_ny").__dict__
+        output.attrs["source_timezone"] = self.source_timezone
+        return output
 
     def get_account_state(self) -> AccountState:
         self._ensure()
@@ -180,14 +207,32 @@ class MT5BrokerAdapter:
             raise BrokerError(f"MT5 order_send failed: {self.mt5.last_error()}")
         return result
 
+    def get_quote(self, symbol: str) -> Quote:
+        self._select_symbol(symbol)
+        tick = self.mt5.symbol_info_tick(symbol)
+        return self._quote_from_tick(tick)
+
+    def _quote_from_tick(self, tick) -> Quote:
+        if tick is None or not getattr(tick, "time", 0) or not math.isfinite(float(tick.time)) or float(tick.time) <= 0:
+            raise BrokerError("MT5 quote unavailable or missing timestamp")
+        return Quote(float(tick.bid), float(tick.ask), self._source_timestamp(tick.time).to_pydatetime(warn=False))
+
     def place_order(self, request: OrderRequest) -> OrderResult:
         signal = request.signal
         self._select_symbol(signal.symbol)
-        tick = self.mt5.symbol_info_tick(signal.symbol)
-        if tick is None:
-            return OrderResult(OrderStatus.REJECTED, message="MT5 tick unavailable")
+        try:
+            quote = self.get_quote(signal.symbol)
+            quote.validate(config.SETTINGS.stale_price_seconds, config.SETTINGS.max_spread)
+        except (ValueError, BrokerError) as exc:
+            return OrderResult(OrderStatus.REJECTED, message=str(exc))
         is_buy = signal.direction == Direction.LONG
-        price = float(tick.ask if is_buy else tick.bid)
+        price = quote.ask if is_buy else quote.bid
+        reference = request.reference_price if request.reference_price is not None else signal.entry
+        if abs(price - reference) > request.max_slippage:
+            return OrderResult(OrderStatus.REJECTED, message="execution price moved beyond slippage limit")
+        if not (signal.stop_loss < price < signal.take_profit if is_buy else signal.take_profit < price < signal.stop_loss):
+            return OrderResult(OrderStatus.REJECTED, message="execution price crossed SL/TP")
+        info = self.mt5.symbol_info(signal.symbol)
         mt5_request = {
             "action": self.mt5.TRADE_ACTION_DEAL,
             "symbol": signal.symbol,
@@ -196,7 +241,7 @@ class MT5BrokerAdapter:
             "price": price,
             "sl": signal.stop_loss,
             "tp": signal.take_profit,
-            "deviation": int(request.max_slippage),
+            "deviation": max(0, int(request.max_slippage / info.point)),
             "magic": self.magic,
             "comment": request.client_order_id[:31],
             "type_time": self.mt5.ORDER_TIME_GTC,
@@ -218,7 +263,7 @@ class MT5BrokerAdapter:
             else OrderStatus.FILLED
         )
         return OrderResult(
-            status, str(result.order), str(result.deal or result.order), float(result.volume),
+            status, str(result.order), str(result.order), float(result.volume),
             float(result.price), str(result.comment), result._asdict()
         )
 
@@ -269,18 +314,28 @@ class MT5BrokerAdapter:
         checks["symbol"] = info.__dict__
         checks["tick"] = tick._asdict() if tick else None
         checks["trading_enabled"] = info.can_long or info.can_short
-        if tick:
-            checks["spread"] = float(tick.ask - tick.bid)
-            checks["valid_spread"] = checks["spread"] <= config.SETTINGS.max_spread
-            checks["price_age_seconds"] = max(
-                0.0, datetime.now(timezone.utc).timestamp() - float(tick.time)
-            )
-            checks["fresh_tick"] = (
-                checks["price_age_seconds"] <= config.SETTINGS.stale_price_seconds
-            )
-        else:
-            checks["valid_spread"] = False
-            checks["fresh_tick"] = False
+        observed = datetime.now(timezone.utc)
+        checks.update(observed_at=observed.isoformat(), source_timezone=self.source_timezone,
+                      valid_spread=False, fresh_tick=False, price_age_seconds=None, quote_errors=[])
+        try:
+            # Reuse serving normalization and validation; never clamp away clock errors.
+            quote = self._quote_from_tick(tick)
+            checks["source_timestamp_utc"] = quote.timestamp.isoformat()
+            checks["spread"] = quote.spread
+            checks["price_age_seconds"] = quote.age_seconds(observed)
+            try:
+                quote.validate_prices(config.SETTINGS.max_spread)
+                checks["valid_spread"] = True
+            except ValueError as exc:
+                checks["quote_errors"].append(str(exc))
+            try:
+                quote.validate_timestamp(config.SETTINGS.stale_price_seconds, observed)
+                checks["fresh_tick"] = True
+            except ValueError as exc:
+                checks["quote_errors"].append(str(exc))
+        except Exception as exc:
+            # Includes invalid/ambiguous source timezone timestamps; diagnostic fails closed.
+            checks["quote_errors"].append(str(exc))
         checks["ok"] = all((
             checks["terminal"], checks["account"], checks["symbol"], checks["tick"],
             checks["trading_enabled"], checks["valid_spread"], checks["fresh_tick"],
