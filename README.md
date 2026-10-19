@@ -70,7 +70,7 @@ ai-bot/
 
 ### Prerequisites
 
-- Python 3.12+ (CI covers 3.12, 3.13 and 3.14)
+- Python 3.12 or 3.13 (Python 3.14 is blocked by the pinned coincurve source-build dependency)
 - (Optional) MetaTrader 5 terminal installed on Windows (for MT5 broker integration)
 
 ### Setup

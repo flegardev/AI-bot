@@ -154,4 +154,6 @@ ruff check .
 mypy backtest brokers core data execution ml persistence risk strategy config.py logger.py main.py web_demo.py
 ```
 
-CI runs pytest on Python 3.12, 3.13 and 3.14. This includes pytest function tests that the old unittest-only CI skipped.
+CI runs pytest on supported Python 3.12 and 3.13. This includes pytest function tests that the old unittest-only CI skipped.
+Python 3.14 currently hits an upstream coincurve source-build packaging failure; the container uses Python 3.13
+with an available binary wheel. Upstream issue: https://github.com/ofek/coincurve/issues/208
