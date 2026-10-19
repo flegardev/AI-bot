@@ -27,3 +27,8 @@ Additional implementation references inspected on 2026-10-19:
   [chat API](https://docs.ollama.com/api/chat): optional JSON-schema hypothesis transport, nonstreaming
   temperature zero, bounded response schema and request timeout. No real local inference was run in this audit.
   Structured output does not make a proposal true or its generation deterministic across runtimes.
+- [MetaQuotes Python history time convention](https://www.mql5.com/en/docs/python_metatrader5/mt5copyratesrange_py)
+  and [tick structure](https://www.mql5.com/en/docs/python_metatrader5/mt5symbolinfotick_py), rechecked 2026-10-19:
+  official API documentation specifies UTC for tick/bar times and exposes seconds/milliseconds. The clock
+  audit preserves raw observations and compares them with that convention. A current offset does not identify
+  historical broker DST rules; neither community reports nor tester-time simulation qualify a source contract.

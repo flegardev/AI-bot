@@ -32,6 +32,20 @@ Quotes must have valid positive bid/ask, an explicit timestamp, acceptable sprea
 convention before proceeding; the bot never silently subtracts a guessed broker offset or fabricates freshness.
 MT5 documents UTC for Python history: https://www.mql5.com/en/docs/python_metatrader5/mt5copyratesrange_py
 
+Record raw tick seconds/milliseconds, raw bar opens, normalized source times and host UTC without changing
+the clock or inventing an offset:
+
+```powershell
+python scripts/mt5_clock_audit.py --symbol EURUSD --terminal "C:\Program Files\MetaTrader 5\terminal64.exe" --output artifacts/clock-audit-001
+w32tm /query /status
+```
+
+The audit returns exit 2 when the quote/source gate fails, retains signed negative future ages, and saves
+`clock_audit.json`. It uses read-only APIs and omits account IDs/balances. A passing observation still does
+not certify the broker's historical UTC/DST contract or qualify a forward candidate. Compare host UTC to an
+independent time source too: Windows may report an unsynchronized Local CMOS Clock. Do not infer the broker's
+DST calendar from a current three-hour offset or from a community forum assertion.
+
 Paper mode replays completed bars once across restarts, processes SL/TP, marks positions, and observes the current
 quote. Bars that started before a mid-bar entry cannot reconstruct post-entry extrema; sampled quotes cover
 those positions until a complete post-entry bar becomes available. A missing replay interval blocks resumption.

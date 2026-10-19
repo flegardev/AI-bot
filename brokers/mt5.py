@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 from datetime import datetime, timezone
 from typing import Any
@@ -209,7 +210,10 @@ class MT5BrokerAdapter:
     def get_quote(self, symbol: str) -> Quote:
         self._select_symbol(symbol)
         tick = self.mt5.symbol_info_tick(symbol)
-        if tick is None or not getattr(tick, "time", 0):
+        return self._quote_from_tick(tick)
+
+    def _quote_from_tick(self, tick) -> Quote:
+        if tick is None or not getattr(tick, "time", 0) or not math.isfinite(float(tick.time)) or float(tick.time) <= 0:
             raise BrokerError("MT5 quote unavailable or missing timestamp")
         return Quote(float(tick.bid), float(tick.ask), self._source_timestamp(tick.time).to_pydatetime(warn=False))
 
@@ -310,18 +314,28 @@ class MT5BrokerAdapter:
         checks["symbol"] = info.__dict__
         checks["tick"] = tick._asdict() if tick else None
         checks["trading_enabled"] = info.can_long or info.can_short
-        if tick:
-            checks["spread"] = float(tick.ask - tick.bid)
-            checks["valid_spread"] = checks["spread"] <= config.SETTINGS.max_spread
-            checks["price_age_seconds"] = max(
-                0.0, datetime.now(timezone.utc).timestamp() - float(tick.time)
-            )
-            checks["fresh_tick"] = (
-                checks["price_age_seconds"] <= config.SETTINGS.stale_price_seconds
-            )
-        else:
-            checks["valid_spread"] = False
-            checks["fresh_tick"] = False
+        observed = datetime.now(timezone.utc)
+        checks.update(observed_at=observed.isoformat(), source_timezone=self.source_timezone,
+                      valid_spread=False, fresh_tick=False, price_age_seconds=None, quote_errors=[])
+        try:
+            # Reuse serving normalization and validation; never clamp away clock errors.
+            quote = self._quote_from_tick(tick)
+            checks["source_timestamp_utc"] = quote.timestamp.isoformat()
+            checks["spread"] = quote.spread
+            checks["price_age_seconds"] = quote.age_seconds(observed)
+            try:
+                quote.validate_prices(config.SETTINGS.max_spread)
+                checks["valid_spread"] = True
+            except ValueError as exc:
+                checks["quote_errors"].append(str(exc))
+            try:
+                quote.validate_timestamp(config.SETTINGS.stale_price_seconds, observed)
+                checks["fresh_tick"] = True
+            except ValueError as exc:
+                checks["quote_errors"].append(str(exc))
+        except Exception as exc:
+            # Includes invalid/ambiguous source timezone timestamps; diagnostic fails closed.
+            checks["quote_errors"].append(str(exc))
         checks["ok"] = all((
             checks["terminal"], checks["account"], checks["symbol"], checks["tick"],
             checks["trading_enabled"], checks["valid_spread"], checks["fresh_tick"],

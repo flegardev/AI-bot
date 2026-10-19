@@ -10,6 +10,13 @@ override for a separately verified source contract. No offset is inferred from h
 computer clock. Both history request bounds and returned bars/quotes use the same declared convention.
 Ambiguous or nonexistent DST wall times fail. Do not set this override simply to make a freshness gate pass.
 
+Connection diagnostics and serving quotes now share source normalization, price validation and the same
+timestamp rule: `-5 <= signed_age_seconds <= STALE_PRICE_SECONDS`. Negative ages are retained, not clamped.
+The read-only clock audit records raw tick seconds/milliseconds, raw bars, normalized timestamps and host UTC.
+Its `source_contract_verified` field stays false: observations cannot establish a historical timezone contract.
+Parameterized winter/summer/transition tests use a synthetic Europe/Helsinki contract to exercise conversion;
+they do not assert that MetaQuotes-Demo follows that timezone or its DST transition dates.
+
 `fx_ny` opens Sunday 17:00 and closes Friday 17:00 in America/New_York, including DST. `fx` retains the
 legacy fixed Friday/Sunday 22:00 UTC approximation. `24/7` includes all bars. Broker holidays and maintenance
 breaks require documented explicit exclusions; they are never forward-filled. A calendar is not inferred from
