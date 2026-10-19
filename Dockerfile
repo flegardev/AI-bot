@@ -1,5 +1,5 @@
 # AI Trading Bot — production worker image
-FROM python:3.14-slim AS base
+FROM python:3.13-slim AS base
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -24,6 +24,6 @@ RUN mkdir -p /app/state && \
 USER appuser
 
 # Safe default: paper trading (no real orders). Override the mode at runtime,
-# e.g. docker run ... ai-bot --mode backtest
+# e.g. docker run ... ai-bot backtest --broker binance --symbol BTC/USDT
 ENTRYPOINT ["python", "main.py"]
-CMD ["--mode", "paper"]
+CMD ["paper", "--broker", "binance", "--symbol", "BTC/USDT"]

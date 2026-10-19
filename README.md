@@ -2,6 +2,16 @@
 
 A modular algorithmic trading and quantitative backtesting framework in Python featuring MetaTrader 5 and Binance broker adapters, Scikit-Learn ML signal filtering, multi-gate execution safety, and local dashboard monitoring.
 
+## Research reliability upgrade
+
+See [RESEARCH_GUIDE.md](RESEARCH_GUIDE.md) for strict historical data checks, strategy rejection diagnostics,
+delayed executable fills, completed-bar paper exits, purged ML training, baseline comparisons,
+rolling forward evaluation, cost stress tests, and demo observation exports.
+
+Profitability is unproven. A passing software test or a profitable historical sample does not approve live trading.
+Research commands block incomplete history. Entry execution blocks stale, future, malformed, or overly wide quotes.
+The guarded live command currently supports MT5 only. Binance remains available for research and paper data.
+
 ![AI Bot Trading Dashboard](./_final_desktop_screenshots/01-main-dashboard-or-home.png)
 
 ## Overview
@@ -60,7 +70,7 @@ ai-bot/
 
 ### Prerequisites
 
-- Python 3.13+ (or Python 3.14)
+- Python 3.12 or 3.13 (Python 3.14 is blocked by the pinned coincurve source-build dependency)
 - (Optional) MetaTrader 5 terminal installed on Windows (for MT5 broker integration)
 
 ### Setup
@@ -147,6 +157,9 @@ python main.py backtest --start 2024-01-01 --end 2024-12-31
 # Run backtest and train the ML filter
 python main.py backtest --train-ml
 ```
+
+`--train-ml` now trains from feature-complete, unfiltered rule trades when there are enough samples.
+It reports insufficient samples explicitly. It does not invent trades or bypass the data-quality gate.
 
 ### 3. Run Real-Time Paper Trading (Safe Default)
 ```bash

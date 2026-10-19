@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from decimal import ROUND_DOWN, Decimal
 from typing import Callable
 
@@ -28,6 +29,12 @@ def calculate_mt5_position_size(
     def empty(reason: str) -> SizingResult:
         return SizingResult(requested_risk, 0.0, 0.0, 0.0, reason)
 
+    if not all(math.isfinite(value) for value in (
+        request.account.equity, request.account.free_margin, request.risk_fraction,
+        request.entry_price, request.stop_loss, request.estimated_commission_per_lot,
+        info.tick_size, info.tick_value, info.volume_min, info.volume_step, info.contract_size, info.leverage)):
+        return empty("nonfinite sizing inputs")
+
     if request.account.equity <= 0 or request.risk_fraction <= 0 or request.risk_fraction > 1:
         return empty("invalid account equity or risk fraction")
     if request.entry_price <= 0 or request.stop_loss <= 0:
@@ -54,7 +61,7 @@ def calculate_mt5_position_size(
     else:
         loss_per_lot = (distance / info.tick_size) * info.tick_value
     loss_per_lot += max(0.0, request.estimated_commission_per_lot)
-    if loss_per_lot <= 0:
+    if not math.isfinite(loss_per_lot) or loss_per_lot <= 0:
         return empty("unable to estimate stop loss")
 
     raw_volume = min(requested_risk / loss_per_lot, info.volume_max)
@@ -71,7 +78,7 @@ def calculate_mt5_position_size(
     else:
         leverage = max(info.leverage, 1.0)
         margin = request.entry_price * info.contract_size * volume / leverage
-    if margin > request.account.free_margin:
+    if not math.isfinite(margin) or margin > request.account.free_margin:
         return SizingResult(
             requested_risk, estimated_loss, 0.0, margin, "insufficient free margin"
         )

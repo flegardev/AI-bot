@@ -116,6 +116,8 @@ class OrderRequest:
     client_order_id: str
     max_slippage: float = 0.0
     order_type: str = "market"
+    reference_price: float | None = None
+    execution_timestamp: datetime | None = None
 
 
 @dataclass
@@ -144,6 +146,7 @@ class Position:
     order_id: str = ""
     status: str = "open"
     unrealized_pnl: float = 0.0
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

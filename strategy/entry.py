@@ -103,8 +103,10 @@ def get_entry_details(df_5m: pd.DataFrame, sweep_direction: str) -> dict:
     delta = close.diff()
     gain = delta.clip(lower=0).rolling(14).mean()
     loss = (-delta.clip(upper=0)).rolling(14).mean()
-    rs = gain / loss.replace(0, pd.NA)
-    rsi = (100 - (100 / (1 + rs))).fillna(50.0).iloc[-1]
+    rs = gain / loss.replace(0, float("nan"))
+    rsi_series = 100 - (100 / (1 + rs))
+    rsi_series = rsi_series.mask((loss == 0) & (gain > 0), 100.0)
+    rsi = rsi_series.fillna(50.0).iloc[-1]
 
     hl = df_5m["high"] - df_5m["low"]
     hpc = (df_5m["high"] - df_5m["close"].shift()).abs()

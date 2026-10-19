@@ -36,7 +36,7 @@ class FakeMT5:
                       trade_mode=1)
         return type("Symbol", (), values)()
     def symbol_info_tick(self, symbol):
-        return type("Tick", (), {"ask": 1.1001, "bid": 1.0999, "_asdict": lambda self: {"ask": self.ask, "bid": self.bid}})()
+        return type("Tick", (), {"ask": 1.1001, "bid": 1.0999, "time": datetime.now(timezone.utc).timestamp(), "_asdict": lambda self: {"ask": self.ask, "bid": self.bid}})()
     def order_calc_profit(self, order_type, symbol, volume, entry, stop): return -1000
     def order_calc_margin(self, order_type, symbol, volume, entry): return volume * 1000
     def order_check(self, request): return type("Check", (), {"retcode": 0})()
