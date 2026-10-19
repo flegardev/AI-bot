@@ -12,6 +12,7 @@ from core.timeframes import filter_closed_candles, timeframe_to_timedelta
 
 
 class BaselineStrategy:
+    name = "baseline"
     def __init__(self, kind="trend", period=20):
         if kind not in {"trend", "breakout"} or period < 5:
             raise ValueError("invalid baseline")

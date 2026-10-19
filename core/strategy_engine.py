@@ -19,10 +19,12 @@ from strategy.liquidity import detect_liquidity_sweep
 
 class StrategyEngine:
     """Single broker-independent strategy path used by every mode."""
+    name = "smc_baseline_v1"
 
-    def __init__(self, predictor=None):
+    def __init__(self, predictor=None, bias_provider=None):
         from ml.predictor import MLPredictor
         self.predictor = predictor if predictor is not None else MLPredictor()
+        self.bias_provider = bias_provider
         self.diagnostics: Counter[str] = Counter()
         self.last_reason = "not_evaluated"
 
@@ -69,7 +71,7 @@ class StrategyEngine:
                 return self.reject("invalid_data")
             if len(closed[tf]) < minimum:
                 return self.reject(f"insufficient_history_{tf}")
-        bias = get_bias_details(closed[config.TF_BIAS])
+        bias = (self.bias_provider or get_bias_details)(closed[config.TF_BIAS])
         if bias.get("bias") is None:
             return self.reject("no_bias")
         sweep = detect_liquidity_sweep(closed[config.TF_LIQUIDITY])

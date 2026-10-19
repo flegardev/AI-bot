@@ -19,6 +19,7 @@ from brokers.base import BrokerCapabilities
 from brokers.paper import PaperBrokerAdapter
 from core.diagnostics import result_for
 from core.models import Direction, OrderRequest, PositionSizeRequest, SymbolInfo, TradeSignal
+from core.regimes import describe_market
 from core.strategy_engine import StrategyEngine
 from core.timeframes import _utc, filter_closed_candles, timeframe_to_timedelta
 from data.quality import DataQualityError, inspect_dataset
@@ -175,6 +176,8 @@ class BacktestEngine:
                         self.symbol, candles, as_of, "signal" if candidate_signal else getattr(self.strategy, "last_reason", "no_entry"),
                         candidate_signal, getattr(self.strategy, "name", type(self.strategy).__name__)).to_record())
                     if candidate_signal:
+                        candidate_signal.metadata.update(describe_market(candles[config.TF_ENTRY], as_of,
+                            float(candles[config.TF_ENTRY]["spread"].iloc[-1]) if "spread" in candles[config.TF_ENTRY] else config.BACKTEST_SPREAD))
                         pending.append((index + max(1, config.BACKTEST_LATENCY_BARS), candidate_signal))
                 else:
                     self.decision_rows.append({"timestamp": as_of.isoformat(), "symbol": self.symbol,
@@ -214,6 +217,7 @@ class BacktestEngine:
         risk_amount = float(features.get("risk_amount", 0))
         self.trades.append({
             **{key: features[key] for key in FEATURE_COLS if key in features},
+            **{key: features.get(key, "unknown") for key in ("utc_session", "volatility_bucket", "market_regime", "spread_bucket", "entry_month")},
             "position_id": fill.position_id, "signal_id": features.get("signal_id"),
             "decision_id": features.get("decision_id"),
             "timestamp": features.get("signal_timestamp", event["opened_at"]),
@@ -225,6 +229,8 @@ class BacktestEngine:
             "slippage_price": float(event.get("entry_slippage", 0)) + fill.slippage,
             "pnl": pnl, "r_multiple": pnl / risk_amount if risk_amount else 0,
             "result": "win" if pnl > 0 else "loss", "exit_reason": event["reason"],
+            "label_start": features.get("signal_timestamp", event["opened_at"]),
+            "label_end": fill.timestamp.isoformat(), "matured": event["reason"] != "end_of_data",
         })
 
     def _compute_stats(self, frame):
@@ -237,6 +243,10 @@ class BacktestEngine:
         returns = daily.pct_change().dropna()
         downside = returns[returns < 0]
         max_dd = abs(float(dd.min()))
+        durations, current = [], 0
+        for value in dd:
+            current = current + 1 if value < 0 else 0
+            durations.append(current)
         days = max((frame.index[-1] + timeframe_to_timedelta(config.TF_ENTRY) - frame.index[0]).total_seconds() / 86400, 1)
         net = self.balance / self.initial_balance - 1
         annualized = (1 + net) ** (365 / days) - 1 if net > -1 else -1
@@ -260,6 +270,8 @@ class BacktestEngine:
             "long_short_results": {d: sum(t["pnl"] for t in self.trades if t["direction"] == d) for d in ("LONG", "SHORT")},
             "data_quality_passed": self.quality["ok"],
             "decision_records": len(self.decision_rows),
+            "drawdown_recovery_bars": max(durations, default=0),
+            "turnover_notional": sum(2 * t["entry_price"] * t["volume"] * self.symbol_info.contract_size for t in self.trades),
             "evidence_status": "historical_simulation_only" if self.quality["ok"] and len(pnls) else "insufficient_evidence",
             "assumptions": {"spread": config.BACKTEST_SPREAD * self.cost_multiplier,
                 "commission_rate": config.BACKTEST_FEE_RATE * self.cost_multiplier,
@@ -290,7 +302,17 @@ class BacktestEngine:
         write("signal_decisions.json", self.decision_rows)
         pd.DataFrame(self.trades, columns=list(dict.fromkeys(FEATURE_COLS + [
             "position_id", "signal_id", "decision_id", "timestamp", "symbol", "direction", "entry_timestamp", "exit_timestamp",
-            "entry_price", "exit_price", "stop_loss", "take_profit", "volume", "fees", "swap", "slippage_price", "pnl", "r_multiple", "result", "exit_reason"]))).to_csv(self.artifact_dir / "trades.csv", index=False)
+            "entry_price", "exit_price", "stop_loss", "take_profit", "volume", "fees", "swap", "slippage_price", "pnl", "r_multiple", "result", "exit_reason",
+            "label_start", "label_end", "matured", "utc_session", "volatility_bucket", "market_regime", "spread_bucket", "entry_month"]))).to_csv(self.artifact_dir / "trades.csv", index=False)
+        groups = []
+        trades = pd.DataFrame(self.trades)
+        if not trades.empty:
+            for dimension in ("symbol", "utc_session", "volatility_bucket", "market_regime", "spread_bucket", "entry_month"):
+                for value, group in trades.groupby(dimension):
+                    groups.append({"dimension": dimension, "value": value, "trades": len(group),
+                        "net_pnl": float(group["pnl"].sum()), "expectancy": float(group["pnl"].mean()),
+                        "win_rate": float((group["pnl"] > 0).mean())})
+        pd.DataFrame(groups, columns=["dimension", "value", "trades", "net_pnl", "expectancy", "win_rate"]).to_csv(self.artifact_dir / "regime_report.csv", index=False)
         equity = pd.DataFrame(self.equity_rows, columns=["timestamp", "balance", "equity"])
         equity.to_csv(self.artifact_dir / "equity_curve.csv", index=False)
         if not equity.empty:

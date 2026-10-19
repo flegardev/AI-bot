@@ -36,11 +36,11 @@ from risk.engine import RiskEngine, RiskLimits
 def parser():
     root = argparse.ArgumentParser(description="MT5 trading research and guarded execution")
     commands = root.add_subparsers(dest="command", required=True)
-    for name in ("check", "backtest", "research", "cache-data", "paper", "live"):
+    for name in ("check", "backtest", "research", "compete", "cache-data", "paper", "live"):
         command = commands.add_parser(name)
         command.add_argument("--broker", choices=["mt5", "binance"], default=config.SETTINGS.broker)
         command.add_argument("--symbol", default=config.SYMBOL)
-    for name in ("backtest", "research", "cache-data"):
+    for name in ("backtest", "research", "compete", "cache-data"):
         command = commands.choices[name]
         command.add_argument("--start", default=config.BACKTEST_START)
         command.add_argument("--end", default=config.BACKTEST_END)
@@ -49,6 +49,7 @@ def parser():
         command.add_argument("--data-dir", help="Offline UTC OHLCV CSVs (1h/15m/5m.csv) and symbol.json")
     commands.choices["backtest"].add_argument("--train-ml", action="store_true")
     commands.choices["research"].add_argument("--folds", type=int, default=3)
+    commands.choices["compete"].add_argument("--budget", type=int, default=48)
     for name in ("paper", "live"):
         commands.choices[name].add_argument("--once", action="store_true")
     commands.add_parser("dashboard").add_argument("--port", type=int, default=8000)
@@ -290,7 +291,7 @@ def main():
         return 0
     if args.command == "check":
         return check(args)
-    if args.command in {"backtest", "research", "cache-data"}:
+    if args.command in {"backtest", "research", "compete", "cache-data"}:
         broker = None
         try:
             start_value, end_value = pd.Timestamp(args.start), pd.Timestamp(args.end)
@@ -331,7 +332,12 @@ def main():
                 (target / "data_quality.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
                 print(json.dumps(report, indent=2))
                 return 0 if report["ok"] else 2
-            if args.command == "research":
+            if args.command == "compete":
+                from backtest.competition import competition
+                result = competition(frames, args.symbol, info, start, end, args.output, args.calendar,
+                                     max_experiments=args.budget)
+                print(json.dumps(result, indent=2, default=str))
+            elif args.command == "research":
                 from backtest.research import run_research
                 result = run_research(frames, args.symbol, info, start, end, args.output, args.calendar, args.folds)
                 print(json.dumps(result, indent=2, default=str))
