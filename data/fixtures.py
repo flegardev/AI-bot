@@ -2,6 +2,7 @@
 import json
 from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -26,3 +27,17 @@ def diagnostic_fixture(output):
     (root / "contract.json").write_text(json.dumps(asdict(contract), indent=2), encoding="utf-8")
     (root / "NOTICE.txt").write_text("SYNTHETIC SOFTWARE FIXTURE. NOT MARKET DATA OR PROFITABILITY EVIDENCE.", encoding="utf-8")
     return frames, info, start, end
+
+
+def labeled_model_fixture(count=300):
+    """Artificial separable labels exercise calibration; not simulated market returns."""
+    from ml.features import FEATURE_COLS, FEATURE_VERSION
+    records = []
+    for index in range(count):
+        timestamp = pd.Timestamp("2020-01-01", tz="UTC") + pd.Timedelta(days=index)
+        values: dict[str, Any] = {name: float(index % 2) for name in FEATURE_COLS}
+        values.update(timestamp=timestamp, exit_timestamp=timestamp + pd.Timedelta(hours=1),
+            pnl=2.0 if index % 2 else -1.0, matured=True, feature_timestamp=timestamp,
+            feature_schema_version=FEATURE_VERSION, dataset_kind="synthetic")
+        records.append(values)
+    return records

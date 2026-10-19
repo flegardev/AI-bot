@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
 from typing import Any, cast
 
 import joblib
@@ -11,15 +10,13 @@ import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import precision_score, recall_score, roc_auc_score
 from sklearn.preprocessing import StandardScaler
+from threadpoolctl import threadpool_limits
 
 import config
 import logger
+from ml.features import FEATURE_COLS
 
-FEATURE_COLS = [
-    "ema_distance_pct", "rsi_14", "volume_ratio", "atr_pct",
-    "sweep_direction", "signal_type",
-]
-MODEL_VERSION = "3.0-purged-validation"
+MODEL_VERSION = "4.0-entry-v3-calibrated"
 
 
 def chronological_split(
@@ -53,7 +50,7 @@ class MLPredictor:
     def __init__(self, model_path: str | None = None, enabled: bool | None = None):
         self.model_path = model_path or config.ML_MODEL_PATH
         self.enabled = config.USE_ML_FILTER if enabled is None else enabled
-        self.model: RandomForestClassifier | None = None
+        self.model: Any = None
         self.scaler: StandardScaler | None = None
         self.is_trained = False
         self.metadata: dict[str, Any] = {}
@@ -98,73 +95,20 @@ class MLPredictor:
             raise ValueError("ML features must be finite")
         return values, (frame["result"] == "win").astype(int).to_numpy()
 
-    def train(self, records: list[dict[str, Any]], save: bool = True) -> dict[str, Any]:
-        frame = pd.DataFrame(records)
-        if "timestamp" not in frame:
-            raise ValueError("Chronological ML training requires a timestamp")
-        if len(frame) < config.ML_MIN_SAMPLES:
-            logger.warning(f"Only {len(frame)} samples; need {config.ML_MIN_SAMPLES}.")
-            return {"status": "insufficient_samples", "samples": len(frame), "required": config.ML_MIN_SAMPLES}
-        required = {"exit_timestamp", "pnl"}
-        if required.difference(frame.columns):
-            raise ValueError("ML training requires outcome timestamps and net pnl")
-        entry_times = pd.to_datetime(frame["timestamp"], utc=True)
-        exits = pd.to_datetime(frame["exit_timestamp"], utc=True)
-        if exits.isna().any() or entry_times.isna().any() or (exits < entry_times).any():
-            raise ValueError("invalid ML outcome timestamps")
-        if not np.isfinite(frame["pnl"].astype(float)).all():
-            raise ValueError("nonfinite ML pnl")
-        # Labels always reflect net profit, never a TP/SL string or gross return.
-        frame["result"] = np.where(frame["pnl"].astype(float) > 0, "win", "loss")
-        train, validation, test = chronological_split(frame)
-        if min(len(train), len(validation), len(test)) < 10:
-            return {"status": "insufficient_purged_samples"}
-        x_train, y_train = self._prepare(train)
-        if len(np.unique(y_train)) < 2:
-            return {"status": "single_class_training"}
-        self.scaler = StandardScaler().fit(x_train)
-        self.model = RandomForestClassifier(
-            n_estimators=200, max_depth=6, min_samples_leaf=10,
-            random_state=42, class_weight="balanced_subsample", n_jobs=1
-        ).fit(self.scaler.transform(x_train), y_train)
-        self.is_trained = True
-        validation_metrics = self._evaluate_frame(validation)
-        test_metrics = self._evaluate_frame(test)
-        # Selection uses validation only. The final test is reporting-only.
-        baseline = self._trading_metrics(validation, np.ones(len(validation), dtype=bool))
-        accepted = self._accepted_mask(validation)
-        filtered = self._trading_metrics(validation, accepted)
-        improved = (
-            filtered["net_return"] > baseline["net_return"]
-            and filtered["maximum_drawdown"] <= baseline["maximum_drawdown"]
-            and filtered["accepted_trades"] >= 10
-        )
-        self.enabled = bool(improved)
-        self.metadata = {
-            "trained_at": datetime.now(timezone.utc).isoformat(),
-            "model_version": MODEL_VERSION,
-            "feature_schema": FEATURE_COLS,
-            "samples": len(frame),
-            "status": "trained",
-            "selection_basis": "validation_only",
-            "validation_approved": bool(improved),
-            "selection_end": str(pd.to_datetime(validation["exit_timestamp"], utc=True).max()),
-            "threshold": config.ML_CONFIDENCE_THRESHOLD,
-            "train_end": str(train["timestamp"].iloc[-1]),
-            "test_start": str(test["timestamp"].iloc[0]),
-            "validation": validation_metrics,
-            "untouched_test": test_metrics,
-            "baseline_validation": baseline,
-            "ml_validation": filtered,
-            "baseline_test": self._trading_metrics(test, np.ones(len(test), dtype=bool)),
-            "ml_test": self._trading_metrics(test, self._accepted_mask(test)),
-            "test_note": "reporting only; do not tune on these results; future confirmation still required",
-            "enabled_after_evaluation": self.enabled,
-            "random_seed": 42,
-        }
-        if save:
-            self.save(self.metadata)
-        return self.metadata
+    def train(self, records: list[dict[str, Any]], save: bool = True, *, split_times=None) -> dict[str, Any]:
+        from pathlib import Path
+
+        from ml.tournament import train_tournament
+        output = Path(self.model_path).parent / (Path(self.model_path).stem + "-research") if save else None
+        card, selected = train_tournament(records, output, split_times=split_times)
+        self.metadata = card
+        self.enabled = selected is not None
+        self.is_trained = selected is not None
+        if selected is not None:
+            self.model, self.scaler = selected.model, selected.scaler
+            if save:
+                self.save(card)
+        return card
 
     def walk_forward(
         self, records: list[dict[str, Any]], min_train_samples: int | None = None, step: int = 50
@@ -245,7 +189,8 @@ class MLPredictor:
         values = np.array([[float(features[column]) for column in FEATURE_COLS]])
         if not np.isfinite(values).all():
             raise ValueError("prediction features must be finite")
-        return float(self.model.predict_proba(self.scaler.transform(values))[0][1])
+        with threadpool_limits(limits=1):
+            return float(self.model.predict_proba(self.scaler.transform(values))[0][1])
 
     def is_confident(self, features: dict[str, Any], threshold: float | None = None) -> tuple[bool, float]:
         if not self.enabled:
@@ -253,20 +198,12 @@ class MLPredictor:
         if not self.is_trained or not self.metadata.get("validation_approved"):
             return False, 0.5
         probability = self.predict(features)
-        return probability >= (threshold or config.ML_CONFIDENCE_THRESHOLD), probability
+        return probability >= (threshold if threshold is not None else self.metadata.get("threshold", config.ML_CONFIDENCE_THRESHOLD)), probability
 
     @staticmethod
-    def extract_features(bias_details, entry_details, sweep_direction, df_5m):
-        average = df_5m["volume"].rolling(20).mean().iloc[-1]
-        ratio = df_5m["volume"].iloc[-1] / average if pd.notna(average) and average > 0 else 1.0
-        return {
-            "ema_distance_pct": bias_details.get("ema_distance_pct", 0.0),
-            "rsi_14": entry_details.get("rsi_14", 50.0),
-            "volume_ratio": ratio,
-            "atr_pct": entry_details.get("atr_pct", 0.0),
-            "sweep_direction": 1 if sweep_direction == "bullish" else -1,
-            "signal_type": 1 if entry_details.get("type") == "CHoCH" else 0,
-        }
+    def extract_features(bias_details, entry_details, sweep_direction, df_5m, **kwargs):
+        from ml.features import build_features
+        return build_features(bias_details, entry_details, sweep_direction, df_5m, **kwargs).to_dict()
 
 
 _predictor: MLPredictor | None = None

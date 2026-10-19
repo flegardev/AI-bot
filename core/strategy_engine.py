@@ -33,12 +33,12 @@ class StrategyEngine:
         self.diagnostics[reason] += 1
         return None
 
-    def evaluate(self, symbol, candles, as_of, *, can_long=True, can_short=True):
-        return self.evaluate_result(symbol, candles, as_of, can_long=can_long, can_short=can_short).signal
+    def evaluate(self, symbol, candles, as_of, *, can_long=True, can_short=True, spread=None):
+        return self.evaluate_result(symbol, candles, as_of, can_long=can_long, can_short=can_short, spread=spread).signal
 
-    def evaluate_result(self, symbol, candles, as_of, *, can_long=True, can_short=True):
+    def evaluate_result(self, symbol, candles, as_of, *, can_long=True, can_short=True, spread=None):
         try:
-            signal = self._evaluate_signal(symbol, candles, as_of, can_long=can_long, can_short=can_short)
+            signal = self._evaluate_signal(symbol, candles, as_of, can_long=can_long, can_short=can_short, spread=spread)
         except (ValueError, TypeError, KeyError):
             signal = self.reject("invalid_data")
         self.last_evaluation = result_for(symbol, candles, as_of, self.last_reason, signal)
@@ -54,6 +54,7 @@ class StrategyEngine:
         *,
         can_long: bool = True,
         can_short: bool = True,
+        spread=None,
     ) -> TradeSignal | None:
         self.diagnostics["evaluated"] += 1
         minimums = {config.TF_BIAS: config.EMA_PERIOD,
@@ -99,9 +100,16 @@ class StrategyEngine:
             f"{symbol}|{direction.value}|{signal_timestamp.isoformat()}".encode()
         ).hexdigest()
         from ml.predictor import MLPredictor
-        features = MLPredictor.extract_features(bias, entry, sweep["direction"], closed[config.TF_ENTRY])
+        features = MLPredictor.extract_features(bias, entry, sweep["direction"], closed[config.TF_ENTRY],
+                                                as_of=as_of, sweep_level=sweep["level"], spread=spread)
+        features["feature_schema_version"] = "entry-v3"
+        features["feature_timestamp"] = pd.Timestamp(as_of).isoformat()
         self.diagnostics["rule_signals"] += 1
         if self.predictor.enabled:
+            if self.predictor.metadata.get("dataset_kind") == "synthetic" and any(
+                frame.attrs.get("data_contract", {}).get("dataset_kind") != "synthetic" for frame in closed.values()
+            ):
+                return self.reject("ml_synthetic_model")
             if not self.predictor.is_trained:
                 return self.reject("ml_model_unavailable")
             # A model may never score a signal inside its training/selection window.

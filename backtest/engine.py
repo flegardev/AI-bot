@@ -199,7 +199,10 @@ class BacktestEngine:
                   "rejections": dict(self.rejections)}
         if train_ml:
             predictor = MLPredictor(enabled=False)
-            result["ml_training"] = predictor.train(self.trades) if self.trades else {"status": "no_trades"}
+            begin = self.start or entry_frame.index[0]
+            stop = self.end or entry_frame.index[-1] + step
+            result["ml_training"] = predictor.train(self.trades,
+                split_times=(begin + (stop - begin) * .6, begin + (stop - begin) * .8)) if self.trades else {"status": "no_trades"}
             (self.artifact_dir / "ml_training.json").write_text(json.dumps(result["ml_training"], indent=2, default=str), encoding="utf-8")
         self._write_artifacts(result)
         return result
@@ -220,7 +223,9 @@ class BacktestEngine:
             **{key: features.get(key, "unknown") for key in ("utc_session", "volatility_bucket", "market_regime", "spread_bucket", "entry_month")},
             "position_id": fill.position_id, "signal_id": features.get("signal_id"),
             "decision_id": features.get("decision_id"),
-            "timestamp": features.get("signal_timestamp", event["opened_at"]),
+            "feature_schema_version": features.get("feature_schema_version"),
+            "feature_timestamp": features.get("feature_timestamp"),
+            "timestamp": features.get("feature_timestamp", features.get("signal_timestamp", event["opened_at"])),
             "symbol": fill.symbol, "direction": fill.direction.value,
             "entry_timestamp": event["opened_at"], "exit_timestamp": fill.timestamp.isoformat(),
             "entry_price": event["entry_price"], "exit_price": fill.price,
@@ -229,8 +234,9 @@ class BacktestEngine:
             "slippage_price": float(event.get("entry_slippage", 0)) + fill.slippage,
             "pnl": pnl, "r_multiple": pnl / risk_amount if risk_amount else 0,
             "result": "win" if pnl > 0 else "loss", "exit_reason": event["reason"],
-            "label_start": features.get("signal_timestamp", event["opened_at"]),
+            "label_start": features.get("feature_timestamp", features.get("signal_timestamp", event["opened_at"])),
             "label_end": fill.timestamp.isoformat(), "matured": event["reason"] != "end_of_data",
+            "dataset_kind": next(iter(self.quality["timeframes"].values())).get("data_contract", {}).get("dataset_kind", "unknown"),
         })
 
     def _compute_stats(self, frame):
@@ -303,7 +309,7 @@ class BacktestEngine:
         pd.DataFrame(self.trades, columns=list(dict.fromkeys(FEATURE_COLS + [
             "position_id", "signal_id", "decision_id", "timestamp", "symbol", "direction", "entry_timestamp", "exit_timestamp",
             "entry_price", "exit_price", "stop_loss", "take_profit", "volume", "fees", "swap", "slippage_price", "pnl", "r_multiple", "result", "exit_reason",
-            "label_start", "label_end", "matured", "utc_session", "volatility_bucket", "market_regime", "spread_bucket", "entry_month"]))).to_csv(self.artifact_dir / "trades.csv", index=False)
+            "label_start", "label_end", "matured", "feature_schema_version", "feature_timestamp", "dataset_kind", "utc_session", "volatility_bucket", "market_regime", "spread_bucket", "entry_month"]))).to_csv(self.artifact_dir / "trades.csv", index=False)
         groups = []
         trades = pd.DataFrame(self.trades)
         if not trades.empty:

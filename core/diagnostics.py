@@ -59,7 +59,7 @@ def result_for(symbol, candles, as_of, reason, signal=None, strategy="smc_baseli
     else:
         failed = {"no_bias": "bias", "no_liquidity_sweep": "liquidity", "bias_sweep_mismatch": "alignment",
             "direction_unavailable": "capability", "no_entry": "entry", "no_entry_confirmation": "entry", "invalid_stop": "protection",
-            "ml_model_unavailable": "ml", "ml_temporal_overlap": "ml", "ml_rejected": "ml"}.get(reason)
+            "ml_model_unavailable": "ml", "ml_temporal_overlap": "ml", "ml_rejected": "ml", "ml_synthetic_model": "ml"}.get(reason)
     stages = []
     stopped = False
     for stage in STAGES:

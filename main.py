@@ -36,11 +36,11 @@ from risk.engine import RiskEngine, RiskLimits
 def parser():
     root = argparse.ArgumentParser(description="MT5 trading research and guarded execution")
     commands = root.add_subparsers(dest="command", required=True)
-    for name in ("check", "backtest", "research", "compete", "cache-data", "paper", "live"):
+    for name in ("check", "backtest", "research", "compete", "ml-compare", "cache-data", "paper", "live"):
         command = commands.add_parser(name)
         command.add_argument("--broker", choices=["mt5", "binance"], default=config.SETTINGS.broker)
         command.add_argument("--symbol", default=config.SYMBOL)
-    for name in ("backtest", "research", "compete", "cache-data"):
+    for name in ("backtest", "research", "compete", "ml-compare", "cache-data"):
         command = commands.choices[name]
         command.add_argument("--start", default=config.BACKTEST_START)
         command.add_argument("--end", default=config.BACKTEST_END)
@@ -59,6 +59,7 @@ def parser():
         commands.choices[name].add_argument("--mode", choices=["paper", "live"], default="paper")
     commands.add_parser("demo-report").add_argument("--output", default="artifacts/demo")
     commands.add_parser("diagnostic").add_argument("--output", default="artifacts/diagnostic")
+    commands.add_parser("model-diagnostic").add_argument("--output", default="artifacts/model-diagnostic")
     return root
 
 
@@ -197,6 +198,7 @@ def run_cycle(args, live):
         finally:
             store.record_event("market_observation", observation, mode="live" if live else "paper", symbol=args.symbol)
         as_of = datetime.now(timezone.utc)
+        decision_time = as_of if live else quote.timestamp
         if not live:
             execution.set_clock(as_of)
             execution.spread = quote.spread
@@ -216,8 +218,8 @@ def run_cycle(args, live):
         day_key = f"start_equity_{as_of.date()}"
         day_equity = float(store.get_state(day_key, snapshot.equity))
         store.set_state(day_key, day_equity)
-        evaluation = strategy.evaluate_result(args.symbol, frames, as_of,
-            can_long=execution.capabilities.long, can_short=execution.capabilities.short)
+        evaluation = strategy.evaluate_result(args.symbol, frames, decision_time,
+            can_long=execution.capabilities.long, can_short=execution.capabilities.short, spread=quote.spread)
         signal = evaluation.signal
         store.record_event("strategy_evaluation", evaluation.to_record(), mode="live" if live else "paper", symbol=args.symbol)
         if not signal:
@@ -282,6 +284,16 @@ def run_loop(args, live):
 
 def main():
     args = parser().parse_args()
+    if args.command == "model-diagnostic":
+        from data.fixtures import labeled_model_fixture
+        target = Path(args.output)
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "NOTICE.txt").write_text("SYNTHETIC MODEL FIXTURE; NOT MARKET OR PROFITABILITY EVIDENCE.", encoding="utf-8")
+        predictor = MLPredictor(str(target / "synthetic-model.pkl"), enabled=False)
+        card = predictor.train(labeled_model_fixture())
+        print(json.dumps({"dataset_kind": "synthetic", "status": card["status"],
+                          "candidate_results": card.get("candidate_results"), "artifacts": str(target)}, indent=2))
+        return 0
     if args.command == "diagnostic":
         from data.fixtures import diagnostic_fixture
         frames, info, start, end = diagnostic_fixture(Path(args.output) / "fixture")
@@ -291,7 +303,7 @@ def main():
         return 0
     if args.command == "check":
         return check(args)
-    if args.command in {"backtest", "research", "compete", "cache-data"}:
+    if args.command in {"backtest", "research", "compete", "ml-compare", "cache-data"}:
         broker = None
         try:
             start_value, end_value = pd.Timestamp(args.start), pd.Timestamp(args.end)
@@ -332,7 +344,11 @@ def main():
                 (target / "data_quality.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
                 print(json.dumps(report, indent=2))
                 return 0 if report["ok"] else 2
-            if args.command == "compete":
+            if args.command == "ml-compare":
+                from backtest.ml_comparison import compare_ml
+                result = compare_ml(frames, args.symbol, info, start, end, args.output, args.calendar)
+                print(json.dumps(result, indent=2, default=str))
+            elif args.command == "compete":
                 from backtest.competition import competition
                 result = competition(frames, args.symbol, info, start, end, args.output, args.calendar,
                                      max_experiments=args.budget)
