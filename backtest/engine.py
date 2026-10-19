@@ -1,8 +1,10 @@
 """Auditable bar replay: decide at close, execute at a later open, then process exits."""
 from __future__ import annotations
 
+import hashlib
 import json
 import math
+import subprocess
 import tempfile
 from collections import Counter
 from dataclasses import replace
@@ -15,10 +17,10 @@ import pandas as pd
 import config
 from brokers.base import BrokerCapabilities
 from brokers.paper import PaperBrokerAdapter
+from core.diagnostics import result_for
 from core.models import Direction, OrderRequest, PositionSizeRequest, SymbolInfo, TradeSignal
 from core.strategy_engine import StrategyEngine
 from core.timeframes import _utc, filter_closed_candles, timeframe_to_timedelta
-from data.fetcher import fetch_historical_range
 from data.quality import DataQualityError, inspect_dataset
 from ml.predictor import FEATURE_COLS, MLPredictor
 from persistence.store import TradingStore
@@ -49,12 +51,12 @@ class BacktestEngine:
         self.rejected_signals = 0
         self.equity_rows: list[dict[str, Any]] = []
         self.exposure_bars = 0
+        self.decision_rows: list[dict[str, Any]] = []
         self.quality: dict[str, Any] = {}
         self.start = self.end = None
 
     def _download_data(self):
-        return {tf: fetch_historical_range(self.symbol, tf, config.BACKTEST_START, config.BACKTEST_END)
-                for tf in (config.TF_BIAS, config.TF_LIQUIDITY, config.TF_ENTRY)}
+        raise DataQualityError("Explicit market data required; use the broker-specific CLI loader or --data-dir")
 
     def run(self, train_ml=False, data=None, *, start=None, end=None,
             strict_data=False, calendar="24/7"):
@@ -109,6 +111,8 @@ class BacktestEngine:
             for index, (open_time, bar) in enumerate(entry_frame.iterrows()):
                 opened = open_time.to_pydatetime()
                 as_of = open_time + step
+                if "spread" in bar:
+                    broker.spread = float(bar["spread"]) * mult
                 broker.set_clock(opened)
                 if opened.date() != current_day:
                     current_day, day_equity = opened.date(), broker.get_account_state().equity
@@ -126,6 +130,7 @@ class BacktestEngine:
                     if not valid:
                         self.rejected_signals += 1
                         self.rejections["gap crossed protection level"] += 1
+                        self._execution_decision(original, opened, "gap_crossed_protection", False)
                         continue
                     account = broker.get_account_state()
                     sizing_request = PositionSizeRequest(signal.symbol, signal.direction, expected,
@@ -139,6 +144,7 @@ class BacktestEngine:
                     if not decision.approved:
                         self.rejected_signals += 1
                         self.rejections.update(decision.reasons)
+                        self._execution_decision(original, opened, "; ".join(decision.reasons), False)
                         continue
                     signal = replace(signal, metadata={**signal.metadata, "risk_amount": sizing.estimated_loss_at_stop})
                     order_result = broker.place_order(OrderRequest(signal, sizing.volume, f"bt-{signal.signal_id}",
@@ -146,6 +152,8 @@ class BacktestEngine:
                     if order_result.status.value not in {"filled", "partially_filled"}:
                         self.rejected_signals += 1
                         self.rejections[order_result.message or "broker rejection"] += 1
+                    self._execution_decision(original, opened, order_result.status.value,
+                                             order_result.status.value in {"filled", "partially_filled"})
                 if broker.get_open_positions():
                     self.exposure_bars += 1
                 for fill in broker.process_bar(self.symbol, bar, as_of.to_pydatetime()):
@@ -162,8 +170,15 @@ class BacktestEngine:
                         candles[tf] = frame.iloc[max(0, closed_index - limits[tf]):closed_index]
                     candidate_signal = self.strategy.evaluate(self.symbol, candles, as_of,
                         can_long=self.capabilities.long, can_short=self.capabilities.short)
+                    evaluation = getattr(self.strategy, "last_evaluation", None)
+                    self.decision_rows.append(evaluation.to_record() if evaluation else result_for(
+                        self.symbol, candles, as_of, "signal" if candidate_signal else getattr(self.strategy, "last_reason", "no_entry"),
+                        candidate_signal, getattr(self.strategy, "name", type(self.strategy).__name__)).to_record())
                     if candidate_signal:
                         pending.append((index + max(1, config.BACKTEST_LATENCY_BARS), candidate_signal))
+                else:
+                    self.decision_rows.append({"timestamp": as_of.isoformat(), "symbol": self.symbol,
+                        "accepted": False, "reason_code": "position_or_order_active", "phase": "portfolio"})
                 account = broker.get_account_state()
                 high_water = max(high_water, account.equity)
                 self.equity_rows.append({"timestamp": as_of.isoformat(), "balance": account.balance,
@@ -186,6 +201,11 @@ class BacktestEngine:
         self._write_artifacts(result)
         return result
 
+    def _execution_decision(self, signal, timestamp, reason, accepted):
+        self.decision_rows.append({"timestamp": timestamp.isoformat(), "symbol": self.symbol,
+            "decision_id": signal.metadata.get("decision_id"), "signal_id": signal.signal_id,
+            "phase": "execution", "reason_code": reason, "accepted": accepted})
+
     def _record_close(self, fill, store):
         event = next(event["payload"] for event in store.recent_events(10, "position_closed")
                      if event["entity_id"] == fill.position_id)
@@ -195,6 +215,7 @@ class BacktestEngine:
         self.trades.append({
             **{key: features[key] for key in FEATURE_COLS if key in features},
             "position_id": fill.position_id, "signal_id": features.get("signal_id"),
+            "decision_id": features.get("decision_id"),
             "timestamp": features.get("signal_timestamp", event["opened_at"]),
             "symbol": fill.symbol, "direction": fill.direction.value,
             "entry_timestamp": event["opened_at"], "exit_timestamp": fill.timestamp.isoformat(),
@@ -238,6 +259,7 @@ class BacktestEngine:
             "rejection_reasons": dict(self.rejections), "strategy_diagnostics": counts,
             "long_short_results": {d: sum(t["pnl"] for t in self.trades if t["direction"] == d) for d in ("LONG", "SHORT")},
             "data_quality_passed": self.quality["ok"],
+            "decision_records": len(self.decision_rows),
             "evidence_status": "historical_simulation_only" if self.quality["ok"] and len(pnls) else "insufficient_evidence",
             "assumptions": {"spread": config.BACKTEST_SPREAD * self.cost_multiplier,
                 "commission_rate": config.BACKTEST_FEE_RATE * self.cost_multiplier,
@@ -248,6 +270,7 @@ class BacktestEngine:
                 "entry": "delayed_bar_open_plus_spread_and_slippage", "ohlc_basis": "midpoint",
                 "pnl_conversion": "constant symbol tick value; historical currency conversion not modeled",
                 "swap_note": "constant daily debit; triple rollover not modeled",
+                "rollover_mode": "excluded" if config.BACKTEST_SWAP_PER_LOT_DAY == 0 else "user_supplied_constant_not_verified",
                 "sharpe_basis": "calendar daily returns, 365 periods/year"},
         }
 
@@ -257,8 +280,16 @@ class BacktestEngine:
             (self.artifact_dir / name).write_text(json.dumps(value, indent=2, default=str, allow_nan=False), encoding="utf-8")
         write("backtest_summary.json", result["stats"])
         write("strategy_diagnostics.json", dict(getattr(self.strategy, "diagnostics", {})))
+        decisions = pd.DataFrame(self.decision_rows)
+        if decisions.empty:
+            decisions = pd.DataFrame(columns=["decision_id", "timestamp", "symbol", "accepted", "reason_code"])
+        for key in ("snapshots", "stages"):
+            if key in decisions:
+                decisions[key] = decisions[key].map(lambda value: json.dumps(value, sort_keys=True) if isinstance(value, (dict, list)) else "")
+        decisions.to_csv(self.artifact_dir / "signal_decisions.csv", index=False)
+        write("signal_decisions.json", self.decision_rows)
         pd.DataFrame(self.trades, columns=list(dict.fromkeys(FEATURE_COLS + [
-            "position_id", "signal_id", "timestamp", "symbol", "direction", "entry_timestamp", "exit_timestamp",
+            "position_id", "signal_id", "decision_id", "timestamp", "symbol", "direction", "entry_timestamp", "exit_timestamp",
             "entry_price", "exit_price", "stop_loss", "take_profit", "volume", "fees", "swap", "slippage_price", "pnl", "r_multiple", "result", "exit_reason"]))).to_csv(self.artifact_dir / "trades.csv", index=False)
         equity = pd.DataFrame(self.equity_rows, columns=["timestamp", "balance", "equity"])
         equity.to_csv(self.artifact_dir / "equity_curve.csv", index=False)
@@ -279,3 +310,18 @@ class BacktestEngine:
             "ml_enabled": bool(getattr(getattr(self.strategy, "predictor", None), "enabled", False)),
             "data_digests": {tf: report.get("sha256") for tf, report in self.quality["timeframes"].items()},
             **result["stats"].get("assumptions", {})})
+        try:
+            revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[1],
+                                      capture_output=True, text=True, timeout=5, check=True).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            revision = "unavailable"
+        summary = ["# Diagnostic backtest", "", f"Data quality: {'PASSED' if self.quality['ok'] else 'FAILED / DIAGNOSTIC ONLY'}",
+            f"Closed trades: {len(self.trades)}", f"Decision records: {len(self.decision_rows)}",
+            f"Net P&L: {self.balance - self.initial_balance:.6f}",
+            "", "Strategy funnel:", json.dumps(dict(getattr(self.strategy, "diagnostics", {})), indent=2),
+            "", "Historical simulation only. No profitability or forward-readiness conclusion."]
+        (self.artifact_dir / "summary.md").write_text("\n".join(summary), encoding="utf-8")
+        write("artifacts_manifest.json", {"git_sha": revision, "seed": 42,
+            "data_contracts": {tf: report.get("data_contract") for tf, report in self.quality["timeframes"].items()},
+            "files": {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in self.artifact_dir.iterdir()
+                      if path.is_file() and path.name != "artifacts_manifest.json"}})

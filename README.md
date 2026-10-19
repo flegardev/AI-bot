@@ -27,7 +27,7 @@ The framework incorporates risk management controls including dynamic volatility
 - **Historical Backtesting Engine**: Replays historical OHLCV candle datasets with slippage simulation, spread models, equity curve tracking, and trade log exports.
 - **Multi-Tier Risk Controls**: Volatility-adjusted position sizing, max daily loss limits, trailing drawdown boundaries, max concurrent positions, and stale price detection.
 - **Software Emergency Kill-Switch**: Software-level emergency trading kill-switch (`python main.py kill-switch`) that cancels pending orders and locks the execution state.
-- **Live Execution Safety Gates**: Requires three explicit confirmations (`ENABLE_LIVE_TRADING=true`, `I_UNDERSTAND_REAL_MONEY_RISK=true`, and CLI `--mode live`) before placing live broker orders.
+- **Live Execution Safety Gates**: Requires three explicit confirmations (`ENABLE_LIVE_TRADING=true`, `I_UNDERSTAND_REAL_MONEY_RISK=true`, and CLI `live` subcommand) before placing live broker orders.
 - **Local Analytics Dashboard**: Built-in monitoring server (`python main.py dashboard`) visualizing recent trades, open positions, balance curves, and logs.
 
 ## Screenshots
@@ -212,3 +212,4 @@ docker run -d --name ai-bot --env-file .env -v ai-bot-state:/app/state ai-bot
 
 Copyright (c) 2026 Tini Flegar. All rights reserved.
 Source code is published for portfolio inspection and demonstration purposes.
+

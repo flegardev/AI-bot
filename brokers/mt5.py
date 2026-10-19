@@ -21,6 +21,7 @@ from core.models import (
 )
 from core.quotes import Quote
 from core.timeframes import filter_closed_candles
+from data.contracts import MarketDataContract
 from risk.sizing import calculate_mt5_position_size
 
 TIMEFRAMES = {
@@ -42,6 +43,16 @@ class MT5BrokerAdapter:
         self.mt5: Any = mt5_module
         self.connected = False
         self.magic = int(os.getenv("MT5_MAGIC_NUMBER", "260727"))
+        self.source_timezone = os.getenv("MT5_SOURCE_TIMEZONE", "UTC")
+
+    def _source_timestamp(self, raw_seconds):
+        stamp = pd.Timestamp(raw_seconds, unit="s")
+        return stamp.tz_localize(self.source_timezone, ambiguous="raise", nonexistent="raise").tz_convert("UTC")
+
+    def _request_time(self, timestamp):
+        if timestamp is None or self.source_timezone == "UTC":
+            return timestamp
+        return pd.Timestamp(timestamp).tz_convert(self.source_timezone).tz_localize(None).tz_localize("UTC").to_pydatetime()
 
     def connect(self) -> None:
         path = os.getenv("MT5_TERMINAL_PATH") or None
@@ -92,7 +103,7 @@ class MT5BrokerAdapter:
             raise BrokerError(f"Unsupported MT5 timeframe: {timeframe}")
         tf = getattr(self.mt5, attr)
         if start:
-            rates = self.mt5.copy_rates_range(symbol, tf, start, end or datetime.now(timezone.utc))
+            rates = self.mt5.copy_rates_range(symbol, tf, self._request_time(start), self._request_time(end or datetime.now(timezone.utc)))
         else:
             rates = self.mt5.copy_rates_from_pos(symbol, tf, 0, 1000)
         if rates is None:
@@ -100,14 +111,22 @@ class MT5BrokerAdapter:
         df = pd.DataFrame(rates)
         if df.empty:
             return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
-        df["timestamp"] = pd.to_datetime(df["time"], unit="s", utc=True)
+        raw_times = pd.DatetimeIndex(pd.to_datetime(df["time"], unit="s"))
+        df["timestamp"] = raw_times.tz_localize(self.source_timezone, ambiguous="raise", nonexistent="raise").tz_convert("UTC")
         df = df.set_index("timestamp").rename(columns={"tick_volume": "volume"})
         if df.index.has_duplicates or not df.index.is_monotonic_increasing:
             raise BrokerError("MT5 returned duplicate or unordered candles")
         values = df[["open", "high", "low", "close", "volume"]].to_numpy(dtype=float)
         if not np.isfinite(values).all() or (values[:, :4] <= 0).any() or (values[:, 4] < 0).any():
             raise BrokerError("MT5 returned invalid OHLCV")
-        return filter_closed_candles(df[["open", "high", "low", "close", "volume"]], timeframe)
+        output = filter_closed_candles(df[["open", "high", "low", "close", "volume"]], timeframe,
+                                      min(end, datetime.now(timezone.utc)) if end else None)
+        if start is not None:
+            output = output.loc[output.index >= pd.Timestamp(start)]
+        output.attrs["data_contract"] = MarketDataContract(
+            source="MT5 terminal", timestamp_basis="utc", price_basis="bid", calendar="fx_ny").__dict__
+        output.attrs["source_timezone"] = self.source_timezone
+        return output
 
     def get_account_state(self) -> AccountState:
         self._ensure()
@@ -192,7 +211,7 @@ class MT5BrokerAdapter:
         tick = self.mt5.symbol_info_tick(symbol)
         if tick is None or not getattr(tick, "time", 0):
             raise BrokerError("MT5 quote unavailable or missing timestamp")
-        return Quote(float(tick.bid), float(tick.ask), datetime.fromtimestamp(tick.time, timezone.utc))
+        return Quote(float(tick.bid), float(tick.ask), self._source_timestamp(tick.time).to_pydatetime(warn=False))
 
     def place_order(self, request: OrderRequest) -> OrderResult:
         signal = request.signal

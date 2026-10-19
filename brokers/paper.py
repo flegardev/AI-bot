@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import math
 from datetime import datetime, timezone
 from typing import Any
@@ -19,6 +20,7 @@ from core.models import (
     PositionSizeRequest,
     SymbolInfo,
 )
+from core.timeframes import filter_closed_candles, timeframe_to_timedelta
 from persistence.store import TradingStore
 from risk.sizing import calculate_mt5_position_size
 
@@ -84,7 +86,6 @@ class PaperBrokerAdapter:
         self.store.record_event("startup", {}, mode="paper")
 
     def disconnect(self) -> None:
-        self._persist()
         self.connected = False
         self.store.record_event("shutdown", {}, mode="paper")
 
@@ -118,6 +119,18 @@ class PaperBrokerAdapter:
         return []
 
     def place_order(self, request: OrderRequest) -> OrderResult:
+        if not self.persist_state:
+            return self._place_order(request)
+        previous_state = copy.deepcopy((self.balance, self.realized_today, self.day, self.positions, self.clock))
+        try:
+            with self.store.atomic():
+                self._reload_persisted()
+                return self._place_order(request)
+        except BaseException:
+            self.balance, self.realized_today, self.day, self.positions, self.clock = previous_state
+            raise
+
+    def _place_order(self, request: OrderRequest) -> OrderResult:
         previous = self.store.get_idempotent_response(request.client_order_id)
         if previous:
             previous["status"] = OrderStatus(previous["status"])
@@ -164,6 +177,17 @@ class PaperBrokerAdapter:
         return result
 
     def process_bar(self, symbol: str, bar: pd.Series, timestamp: datetime | None = None) -> list[Fill]:
+        if not self.persist_state:
+            return self._process_bar(symbol, bar, timestamp)
+        before = copy.deepcopy((self.balance, self.realized_today, self.day, self.positions, self.clock))
+        try:
+            with self.store.atomic():
+                return self._process_bar(symbol, bar, timestamp)
+        except BaseException:
+            self.balance, self.realized_today, self.day, self.positions, self.clock = before
+            raise
+
+    def _process_bar(self, symbol: str, bar: pd.Series, timestamp: datetime | None = None) -> list[Fill]:
         """Apply OHLC exits; gaps fill at the adverse open and ambiguous bars stop first."""
         fills: list[Fill] = []
         timestamp = timestamp or datetime.now(timezone.utc)
@@ -200,12 +224,59 @@ class PaperBrokerAdapter:
             elif tp_touch:
                 reason, price = "take_profit", position.take_profit
             if reason:
-                fills.append(self._close_at(position, price, reason, timestamp))
+                fill_time = bar_open.to_pydatetime() if reason.endswith("_gap") and bar_open is not None else timestamp
+                fills.append(self._close_at(position, price, reason, fill_time))
             else:
                 mark = float(bar["close"]) + offset
+                position.metadata["mark_price"] = mark
                 position.unrealized_pnl = self._pnl(position, mark)
         self._persist()
         return fills
+
+    def apply_completed_bar(self, symbol: str, bar: pd.Series, timeframe: str, as_of: datetime) -> list[Fill]:
+        """Exactly-once persistent replay, including rollback of in-memory state."""
+        if not isinstance(bar.name, (pd.Timestamp, datetime)):
+            raise ValueError("replay bar requires an opening timestamp")
+        opened = pd.Timestamp(bar.name)
+        if opened.tzinfo is None or as_of.tzinfo is None:
+            raise ValueError("replay timestamps must be timezone aware")
+        closed = opened + timeframe_to_timedelta(timeframe)
+        if closed > pd.Timestamp(as_of):
+            raise ValueError("cannot replay an incomplete candle")
+        # Reuse the OHLC geometry validation; do not normalize away source errors.
+        validated = filter_closed_candles(pd.DataFrame([bar], index=pd.DatetimeIndex([opened])), timeframe, as_of)
+        values = validated[["open", "high", "low", "close", "volume"]].to_numpy(dtype=float)
+        if not all(math.isfinite(float(value)) for value in values.ravel()) or (values[:, :4] <= 0).any() or (values[:, 4] < 0).any():
+            raise ValueError("invalid replay OHLCV")
+        key = f"paper_last_bar_{symbol}"
+        previous_state = copy.deepcopy((self.balance, self.realized_today, self.day, self.positions, self.clock))
+        try:
+            with self.store.atomic():
+                self._reload_persisted()
+                last = self.store.get_state(key)
+                if last and opened <= pd.Timestamp(last):
+                    return []
+                fills = self.process_bar(symbol, bar, closed.to_pydatetime())
+                self._persist()
+                self.store.set_state(key, opened.isoformat())
+                return fills
+        except BaseException:
+            self.balance, self.realized_today, self.day, self.positions, self.clock = previous_state
+            raise
+
+    def _reload_persisted(self):
+        if not self.persist_state:
+            return
+        self.balance = float(self.store.get_state("paper_balance", self.balance))
+        self.realized_today = float(self.store.get_state("paper_realized_today", self.realized_today))
+        self.day = self.store.get_state("paper_day", self.day)
+        values = self.store.get_state("paper_positions")
+        if values is not None:
+            self.positions = {}
+            for raw in values:
+                raw["direction"] = Direction(raw["direction"])
+                raw["opened_at"] = datetime.fromisoformat(raw["opened_at"])
+                self.positions[raw["position_id"]] = Position(**raw)
 
     def _close_at(self, position: Position, price: float, reason: str, timestamp: datetime | None) -> Fill:
         timestamp = timestamp or self.clock
@@ -256,7 +327,9 @@ class PaperBrokerAdapter:
         position = self.positions.get(position_id)
         if not position:
             return OrderResult(OrderStatus.REJECTED, message="position not found")
-        self._close_at(position, position.entry_price, "manual", None)
+        offset = -self.spread / 2 if position.direction == Direction.LONG else self.spread / 2
+        mark = float(position.metadata.get("mark_price", position.metadata.get("reference_price", position.entry_price) + offset))
+        self._close_at(position, mark, "manual", None)
         return OrderResult(OrderStatus.FILLED, position_id=position_id, filled_volume=position.volume)
 
     def cancel_order(self, order_id: str) -> bool:
@@ -274,7 +347,8 @@ class PaperBrokerAdapter:
             raw["direction"] = position.direction.value
             raw["opened_at"] = position.opened_at.isoformat()
             values.append(raw)
-        self.store.set_state("paper_positions", values)
-        self.store.set_state("paper_balance", self.balance)
-        self.store.set_state("paper_realized_today", self.realized_today)
-        self.store.set_state("paper_day", self.day)
+        with self.store.atomic():
+            self.store.set_state("paper_positions", values)
+            self.store.set_state("paper_balance", self.balance)
+            self.store.set_state("paper_realized_today", self.realized_today)
+            self.store.set_state("paper_day", self.day)

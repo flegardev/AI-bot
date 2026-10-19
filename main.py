@@ -6,7 +6,7 @@ import hashlib
 import json
 import sys
 import time
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -23,7 +23,8 @@ from brokers.mt5 import MT5BrokerAdapter
 from brokers.paper import PaperBrokerAdapter
 from core.models import Direction, PositionSizeRequest, SymbolInfo
 from core.strategy_engine import StrategyEngine
-from core.timeframes import timeframe_to_timedelta
+from core.timeframes import filter_closed_candles, timeframe_to_timedelta
+from data.contracts import MarketDataContract
 from data.quality import DataQualityError, inspect_dataset, inspect_frame, warmup_start
 from execution.reconciliation import ReconciliationService
 from execution.service import SafeExecutionService
@@ -35,15 +36,15 @@ from risk.engine import RiskEngine, RiskLimits
 def parser():
     root = argparse.ArgumentParser(description="MT5 trading research and guarded execution")
     commands = root.add_subparsers(dest="command", required=True)
-    for name in ("check", "backtest", "research", "paper", "live"):
+    for name in ("check", "backtest", "research", "cache-data", "paper", "live"):
         command = commands.add_parser(name)
         command.add_argument("--broker", choices=["mt5", "binance"], default=config.SETTINGS.broker)
         command.add_argument("--symbol", default=config.SYMBOL)
-    for name in ("backtest", "research"):
+    for name in ("backtest", "research", "cache-data"):
         command = commands.choices[name]
         command.add_argument("--start", default=config.BACKTEST_START)
         command.add_argument("--end", default=config.BACKTEST_END)
-        command.add_argument("--calendar", choices=["fx", "24/7"], default=config.MARKET_CALENDAR)
+        command.add_argument("--calendar", choices=["fx", "fx_ny", "24/7"], default=config.MARKET_CALENDAR)
         command.add_argument("--output", default=config.ARTIFACT_DIR)
         command.add_argument("--data-dir", help="Offline UTC OHLCV CSVs (1h/15m/5m.csv) and symbol.json")
     commands.choices["backtest"].add_argument("--train-ml", action="store_true")
@@ -56,6 +57,7 @@ def parser():
     for name in ("kill-switch", "reset-kill-switch"):
         commands.choices[name].add_argument("--mode", choices=["paper", "live"], default="paper")
     commands.add_parser("demo-report").add_argument("--output", default="artifacts/demo")
+    commands.add_parser("diagnostic").add_argument("--output", default="artifacts/diagnostic")
     return root
 
 
@@ -72,6 +74,7 @@ def load_history(market, symbol, start, end):
         # MT5 Forex charts are bid bars. Replay expects midpoint bars.
         for frame in frames.values():
             frame.loc[:, ["open", "high", "low", "close"]] += config.BACKTEST_SPREAD / 2
+            frame.attrs["data_contract"]["price_basis"] = "midpoint"
     return frames
 
 
@@ -98,12 +101,18 @@ def check(args):
 def replay_paper_exits(broker, frame, store, symbol):
     """Process each completed bar once; replay persists across process restarts."""
     key = f"paper_last_bar_{symbol}"
+    frame = filter_closed_candles(frame, config.TF_ENTRY)
     last = store.get_state(key)
     step = timeframe_to_timedelta(config.TF_ENTRY)
     if not broker.get_open_positions(symbol):
         if not frame.empty:
             store.set_state(key, frame.index[-1].isoformat())
         return
+    if frame.empty:
+        current_open = pd.Timestamp.now(tz="UTC").floor("5min")
+        if all(pd.Timestamp(position.opened_at) >= current_open for position in broker.get_open_positions(symbol)):
+            return
+        raise DataQualityError("paper exit history is unavailable")
     if last:
         bars = frame.loc[frame.index > pd.Timestamp(last)]
         positions = broker.get_open_positions(symbol)
@@ -117,9 +126,8 @@ def replay_paper_exits(broker, frame, store, symbol):
         if positions and (frame.empty or min(p.opened_at for p in positions) < frame.index[0]):
             raise DataQualityError("paper position predates available exit history")
         bars = frame
-    for opened, bar in bars.iterrows():
-        broker.process_bar(symbol, bar, (opened + step).to_pydatetime())
-        store.set_state(key, opened.isoformat())
+    for _opened, bar in bars.iterrows():
+        broker.apply_completed_bar(symbol, bar, config.TF_ENTRY, datetime.now(timezone.utc))
         if not broker.get_open_positions(symbol):
             store.set_state(key, frame.index[-1].isoformat())
             break
@@ -167,6 +175,12 @@ def run_cycle(args, live):
         ReconciliationService(execution, store).run()
         frames = {tf: market.get_candles(args.symbol, tf)
                   for tf in (config.TF_BIAS, config.TF_LIQUIDITY, config.TF_ENTRY)}
+        if not live and execution.get_open_positions(args.symbol):
+            cursor = store.get_state(f"paper_last_bar_{args.symbol}")
+            first = frames[config.TF_ENTRY].index[0] if not frames[config.TF_ENTRY].empty else None
+            if cursor and (first is None or pd.Timestamp(cursor) < first):
+                frames[config.TF_ENTRY] = market.get_candles(args.symbol, config.TF_ENTRY,
+                    pd.Timestamp(cursor).to_pydatetime(), datetime.now(timezone.utc))
         if isinstance(market, MT5BrokerAdapter):
             for frame in frames.values():
                 frame.loc[:, ["open", "high", "low", "close"]] += config.BACKTEST_SPREAD / 2
@@ -201,9 +215,10 @@ def run_cycle(args, live):
         day_key = f"start_equity_{as_of.date()}"
         day_equity = float(store.get_state(day_key, snapshot.equity))
         store.set_state(day_key, day_equity)
-        signal = strategy.evaluate(args.symbol, frames, as_of,
+        evaluation = strategy.evaluate_result(args.symbol, frames, as_of,
             can_long=execution.capabilities.long, can_short=execution.capabilities.short)
-        store.record_event("strategy_evaluation", dict(strategy.diagnostics), mode="live" if live else "paper", symbol=args.symbol)
+        signal = evaluation.signal
+        store.record_event("strategy_evaluation", evaluation.to_record(), mode="live" if live else "paper", symbol=args.symbol)
         if not signal:
             logger.info(f"No entry: {strategy.last_reason}")
             return 0
@@ -235,7 +250,8 @@ def run_cycle(args, live):
             spread=quote.spread, price_timestamp=quote.timestamp, portfolio_risk=portfolio_risk,
             symbol_notional=symbol_notional, live_entries_enabled=service.entries_enabled, sizing=sizing)
         result = service.execute(signal, decision, max_slippage=config.SETTINGS.max_slippage,
-            reference_price=price if live else (quote.bid + quote.ask) / 2, execution_timestamp=as_of)
+            reference_price=price if live else (quote.bid + quote.ask) / 2,
+            execution_timestamp=as_of if live else quote.timestamp)
         print(json.dumps(result.__dict__ if result else {"blocked": decision.reasons}, indent=2, default=str))
         return 0
     except (ValueError, RuntimeError) as exc:
@@ -265,9 +281,16 @@ def run_loop(args, live):
 
 def main():
     args = parser().parse_args()
+    if args.command == "diagnostic":
+        from data.fixtures import diagnostic_fixture
+        frames, info, start, end = diagnostic_fixture(Path(args.output) / "fixture")
+        result = BacktestEngine(info.symbol, symbol_info=info, artifact_dir=Path(args.output) / "backtest").run(
+            data=frames, start=start, end=end, strict_data=True, calendar="24/7")
+        print(json.dumps({"dataset_kind": "synthetic", "stats": result["stats"], "artifacts": args.output}, indent=2))
+        return 0
     if args.command == "check":
         return check(args)
-    if args.command in {"backtest", "research"}:
+    if args.command in {"backtest", "research", "cache-data"}:
         broker = None
         try:
             start_value, end_value = pd.Timestamp(args.start), pd.Timestamp(args.end)
@@ -277,8 +300,15 @@ def main():
                 directory = Path(args.data_dir)
                 frames = {tf: pd.read_csv(directory / f"{tf}.csv", index_col="timestamp")
                           for tf in (config.TF_BIAS, config.TF_LIQUIDITY, config.TF_ENTRY)}
-                for frame in frames.values():
-                    frame.index = pd.DatetimeIndex(pd.to_datetime(frame.index, utc=True))
+                contract_path = directory / "contract.json"
+                contract = MarketDataContract.read(contract_path) if contract_path.exists() else None
+                for tf, frame in frames.items():
+                    if contract:
+                        frames[tf] = contract.normalize(frame, config.BACKTEST_SPREAD)
+                        if args.calendar != contract.calendar:
+                            raise ValueError("--calendar disagrees with cached data contract")
+                    else:
+                        frame.index = pd.DatetimeIndex(pd.to_datetime(frame.index, utc=True))
                 info = SymbolInfo(**json.loads((directory / "symbol.json").read_text(encoding="utf-8")))
                 if info.symbol != args.symbol:
                     raise ValueError("symbol.json does not match --symbol")
@@ -289,6 +319,18 @@ def main():
                 frames = load_history(broker, args.symbol, start, end)
                 info = broker.get_symbol_info(args.symbol)
                 capabilities = broker.capabilities
+            if args.command == "cache-data":
+                target = Path(args.output)
+                target.mkdir(parents=True, exist_ok=True)
+                for tf, frame in frames.items():
+                    frame.to_csv(target / f"{tf}.csv", index_label="timestamp")
+                contract = MarketDataContract(f"{args.broker}:{args.symbol}", calendar=args.calendar)
+                (target / "contract.json").write_text(json.dumps(asdict(contract), indent=2), encoding="utf-8")
+                (target / "symbol.json").write_text(json.dumps(asdict(info), indent=2), encoding="utf-8")
+                report = inspect_dataset(frames, start, end, args.calendar, True)
+                (target / "data_quality.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+                print(json.dumps(report, indent=2))
+                return 0 if report["ok"] else 2
             if args.command == "research":
                 from backtest.research import run_research
                 result = run_research(frames, args.symbol, info, start, end, args.output, args.calendar, args.folds)

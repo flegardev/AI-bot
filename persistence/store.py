@@ -34,18 +34,42 @@ CREATE TABLE IF NOT EXISTS idempotency (
 class TradingStore:
     def __init__(self, path: str | Path):
         self.path = Path(path)
+        self._transaction: sqlite3.Connection | None = None
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as connection:
             connection.executescript(SCHEMA)
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
+        if self._transaction is not None:
+            yield self._transaction
+            return
         connection = sqlite3.connect(self.path)
         connection.row_factory = sqlite3.Row
         try:
             yield connection
             connection.commit()
         finally:
+            connection.close()
+
+    @contextmanager
+    def atomic(self) -> Iterator[None]:
+        """Commit ledger, events, idempotency and replay cursor together."""
+        if self._transaction is not None:
+            yield
+            return
+        connection = sqlite3.connect(self.path, timeout=30)
+        connection.row_factory = sqlite3.Row
+        connection.execute("BEGIN IMMEDIATE")
+        self._transaction = connection
+        try:
+            yield
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            self._transaction = None
             connection.close()
 
     def record_event(

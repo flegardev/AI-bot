@@ -27,8 +27,12 @@ def warmup_start(start: datetime) -> datetime:
 def market_hours(index: pd.DatetimeIndex, calendar: str) -> np.ndarray:
     if calendar == "24/7":
         return np.ones(len(index), dtype=bool)
+    if calendar == "fx_ny":
+        local = index.tz_convert("America/New_York")
+        day, hour = local.dayofweek, local.hour
+        return np.asarray((day < 4) | ((day == 4) & (hour < 17)) | ((day == 6) & (hour >= 17)))
     if calendar != "fx":
-        raise ValueError("calendar must be fx or 24/7")
+        raise ValueError("calendar must be fx, fx_ny or 24/7")
     # Explicit approximate FX calendar. DST, holidays and broker breaks require review.
     day, hour = index.dayofweek, index.hour
     return np.asarray((day < 4) | ((day == 4) & (hour < 22)) | ((day == 6) & (hour >= 22)))
@@ -51,6 +55,8 @@ def inspect_frame(frame: pd.DataFrame, timeframe: str, start=None, end=None,
             issues.append("nonfinite OHLCV")
         if (values[:, :4] <= 0).any() or (values[:, 4] < 0).any():
             issues.append("nonpositive price or negative volume")
+        if "spread" in clean and (not np.isfinite(clean["spread"].to_numpy(dtype=float)).all() or (clean["spread"] < 0).any()):
+            issues.append("invalid observed spread")
     except (ValueError, TypeError) as exc:
         return {"ok": False, "issues": issues + [str(exc)], "rows": len(frame)}
     if clean.empty:
@@ -86,7 +92,8 @@ def inspect_frame(frame: pd.DataFrame, timeframe: str, start=None, end=None,
         "coverage": coverage, "warmup_rows": warmup, "missing_bars": len(missing),
         "warmup_missing_bars": len(warmup_missing),
         "missing_examples": [str(item) for item in missing[:10]], "calendar": calendar,
-        "calendar_note": "FX assumes Fri 22:00 to Sun 22:00 UTC closure; broker holidays and DST need review",
+        "calendar_note": "fx_ny uses New York Sunday/Friday 17:00 with DST; fx is legacy fixed UTC; broker holidays/breaks need an explicit calendar",
+        "data_contract": frame.attrs.get("data_contract", {"dataset_kind": "unknown", "source": "unspecified"}),
         "sha256": hashlib.sha256(pd.util.hash_pandas_object(clean, index=True).to_numpy().tobytes()).hexdigest(),
     }
 

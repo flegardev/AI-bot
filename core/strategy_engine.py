@@ -4,9 +4,11 @@ import hashlib
 from collections import Counter
 from datetime import datetime
 
+import numpy as np
 import pandas as pd
 
 import config
+from core.diagnostics import result_for
 from core.models import Direction, TradeSignal
 from core.timeframes import filter_closed_candles, timeframe_to_timedelta
 from risk.manager import calculate_stop_loss
@@ -29,7 +31,20 @@ class StrategyEngine:
         self.diagnostics[reason] += 1
         return None
 
-    def evaluate(
+    def evaluate(self, symbol, candles, as_of, *, can_long=True, can_short=True):
+        return self.evaluate_result(symbol, candles, as_of, can_long=can_long, can_short=can_short).signal
+
+    def evaluate_result(self, symbol, candles, as_of, *, can_long=True, can_short=True):
+        try:
+            signal = self._evaluate_signal(symbol, candles, as_of, can_long=can_long, can_short=can_short)
+        except (ValueError, TypeError, KeyError):
+            signal = self.reject("invalid_data")
+        self.last_evaluation = result_for(symbol, candles, as_of, self.last_reason, signal)
+        if signal is not None:
+            signal.metadata["decision_id"] = self.last_evaluation.decision_id
+        return self.last_evaluation
+
+    def _evaluate_signal(
         self,
         symbol: str,
         candles: dict[str, pd.DataFrame],
@@ -49,6 +64,9 @@ class StrategyEngine:
             for timeframe, frame in candles.items()
         }
         for tf, minimum in minimums.items():
+            values = closed[tf][["open", "high", "low", "close", "volume"]].to_numpy(dtype=float)
+            if not np.isfinite(values).all() or (values[:, :4] <= 0).any() or (values[:, 4] < 0).any():
+                return self.reject("invalid_data")
             if len(closed[tf]) < minimum:
                 return self.reject(f"insufficient_history_{tf}")
         bias = get_bias_details(closed[config.TF_BIAS])
