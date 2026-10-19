@@ -19,9 +19,9 @@ def compare_ml(frames, symbol, info, start, end, output, calendar="fx_ny"):
     train_end = (start + (end - start) * .6).floor("5min")
     test_start = (start + (end - start) * .8).floor("5min")
     attempts = []
-    def run(name, strategy, begin, stop):
+    def run(name, strategy, begin, stop, cost=1.0):
         try:
-            result = BacktestEngine(symbol, symbol_info=info, strategy=strategy, artifact_dir=root / name).run(
+            result = BacktestEngine(symbol, symbol_info=info, strategy=strategy, artifact_dir=root / name, cost_multiplier=cost).run(
                 data=frames, start=begin, end=stop, strict_data=True, calendar=calendar)
             record = {"name": name, "status": "completed", "start": str(begin), "end": str(stop), "stats": result["stats"]}
         except (ValueError, RuntimeError) as exc:
@@ -38,7 +38,7 @@ def compare_ml(frames, symbol, info, start, end, output, calendar="fx_ny"):
     else:
         card = {"status": "insufficient_samples", "samples": 0}
     (root / "training_status.json").write_text(json.dumps(card, indent=2), encoding="utf-8")
-    comparison = {}
+    comparison, stress = {}, []
     if collected:
         for name in ("no_trade", "smc_baseline_v1", "trend_momentum_v1", "atr_breakout_v1"):
             result = run("test_" + name, candidate(name), test_start, end)
@@ -46,8 +46,11 @@ def compare_ml(frames, symbol, info, start, end, output, calendar="fx_ny"):
         if predictor.enabled:
             result = run("test_selected_ml", StrategyEngine(predictor, bias_provider=original_bias), test_start, end)
             comparison["selected_ml"] = result["stats"] if result else None
+            for cost in (.75, 1.5, 2.0):
+                result = run(f"test_ml_cost{cost}", StrategyEngine(predictor, bias_provider=original_bias), test_start, end, cost)
+                stress.append({"cost_multiplier": cost, "stats": result["stats"] if result else None})
     report = {"output": str(root), "training": card, "final_comparison": comparison,
-        "selection_period_end": str(test_start), "paper_only": True,
+        "selection_period_end": str(test_start), "paper_only": True, "selected_ml_cost_stress": stress,
         "status": "unproven" if predictor.enabled else "ml_not_eligible", "attempts": len(attempts)}
     (root / "ml_comparison.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     return report

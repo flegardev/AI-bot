@@ -15,10 +15,12 @@ import numpy as np
 import pandas as pd
 
 import config
+from backtest.references import exposure_matched
 from brokers.base import BrokerCapabilities
 from brokers.paper import PaperBrokerAdapter
 from core.diagnostics import result_for
 from core.models import Direction, OrderRequest, PositionSizeRequest, SymbolInfo, TradeSignal
+from core.provenance import configuration, source_hash
 from core.regimes import describe_market
 from core.strategy_engine import StrategyEngine
 from core.timeframes import _utc, filter_closed_candles, timeframe_to_timedelta
@@ -71,8 +73,12 @@ class BacktestEngine:
         if train_ml and getattr(getattr(self.strategy, "predictor", None), "enabled", False):
             raise ValueError("collect unfiltered rule trades before ML training")
         self.artifact_dir.mkdir(parents=True, exist_ok=True)
+        if (self.artifact_dir / "artifacts_manifest.json").exists():
+            raise ValueError("artifact directory already contains a run; use a fresh output path")
+        (self.artifact_dir / "run_status.json").write_text(json.dumps({"status": "started", "strict_data": strict_data}), encoding="utf-8")
         (self.artifact_dir / "data_quality.json").write_text(json.dumps(self.quality, indent=2), encoding="utf-8")
         if strict_data and not self.quality["ok"]:
+            (self.artifact_dir / "run_status.json").write_text(json.dumps({"status": "blocked", "reason": "data_quality"}), encoding="utf-8")
             raise DataQualityError("data quality failed; inspect data_quality.json before interpreting performance")
         if strict_data and (self.start is None or self.end is None):
             raise DataQualityError("strict research requires explicit start and end")
@@ -229,6 +235,8 @@ class BacktestEngine:
             "symbol": fill.symbol, "direction": fill.direction.value,
             "entry_timestamp": event["opened_at"], "exit_timestamp": fill.timestamp.isoformat(),
             "entry_price": event["entry_price"], "exit_price": fill.price,
+            "entry_midpoint": features.get("reference_price"), "exit_midpoint": event.get("exit_midpoint"),
+            "entry_spread": features.get("entry_spread"), "exit_spread": event.get("exit_spread"),
             "stop_loss": event["stop_loss"], "take_profit": event["take_profit"],
             "volume": fill.volume, "fees": fill.commission, "swap": event.get("swap", 0),
             "slippage_price": float(event.get("entry_slippage", 0)) + fill.slippage,
@@ -349,7 +357,9 @@ class BacktestEngine:
             "", "Strategy funnel:", json.dumps(dict(getattr(self.strategy, "diagnostics", {})), indent=2),
             "", "Historical simulation only. No profitability or forward-readiness conclusion."]
         (self.artifact_dir / "summary.md").write_text("\n".join(summary), encoding="utf-8")
-        write("artifacts_manifest.json", {"git_sha": revision, "seed": 42,
+        write("run_status.json", {"status": "completed", "data_quality_ok": self.quality["ok"]})
+        write("exposure_matched_references.json", exposure_matched(self.trades, self.symbol_info, config.BACKTEST_SLIPPAGE_PCT * self.cost_multiplier))
+        write("artifacts_manifest.json", {"git_sha": revision, "source_sha256": source_hash(), "configuration": configuration(), "seed": 42,
             "data_contracts": {tf: report.get("data_contract") for tf, report in self.quality["timeframes"].items()},
             "files": {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in self.artifact_dir.iterdir()
                       if path.is_file() and path.name != "artifacts_manifest.json"}})

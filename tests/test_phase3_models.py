@@ -32,6 +32,12 @@ def test_three_models_and_rule_reference_are_actually_evaluated(tmp_path):
     assert pd.Timestamp(card["calibration_end"]) < pd.Timestamp(card["selection_end"])
     assert (tmp_path / "model_card.json").exists()
     assert card["selected_estimator"] in {row["name"] for row in card["candidate_results"]}
+    assert len(card["purged_walk_forward"]) == 6
+    for fold in card["purged_walk_forward"]:
+        assert fold["status"] == "completed"
+        assert pd.Timestamp(fold["fit_label_cutoff"]) < pd.Timestamp(fold["calibration_start"])
+        assert pd.Timestamp(fold["calibration_label_cutoff"]) < pd.Timestamp(fold["evaluation_start"])
+        assert pd.Timestamp(fold["evaluation_end"]) < pd.Timestamp(card["selection_end"])
 
 
 def test_unmatured_samples_do_not_create_a_model(tmp_path):

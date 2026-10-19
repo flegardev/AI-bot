@@ -19,6 +19,7 @@ from threadpoolctl import threadpool_limits
 
 import config
 from ml.features import FEATURE_COLS, FEATURE_VERSION
+from ml.walkforward import robustness_folds
 
 
 def train_tournament(records, output=None, *, as_of=None, split_times=None):
@@ -79,6 +80,7 @@ def train_tournament(records, output=None, *, as_of=None, split_times=None):
         "hist_gradient_boosting": HistGradientBoostingClassifier(max_iter=100, max_leaf_nodes=7,
             learning_rate=.05, random_state=42, early_stopping=False),
     }
+    rolling = robustness_folds(train, candidates)
     baseline = MLPredictor._trading_metrics(validation, np.ones(len(validation), dtype=bool))
     rows: list[dict[str, Any]] = []
     fitted: dict[str, MLPredictor] = {}
@@ -113,7 +115,7 @@ def train_tournament(records, output=None, *, as_of=None, split_times=None):
         "declared_test_start": str(split_times[1]) if split_times else None,
         "validation_approved": chosen is not None, "threshold": config.ML_CONFIDENCE_THRESHOLD,
         "baseline_validation": baseline, "ml_validation": winner["validation_trading"] if winner else None,
-        "candidate_results": rows, "random_seed": 42,
+        "candidate_results": rows, "purged_walk_forward": rolling, "random_seed": 42,
         "label_definition": "positive net P&L; forced end-of-data closures and unresolved outcomes excluded",
         "hyperparameters": {name: estimator.get_params(deep=False) for name, estimator in candidates.items()},
         "feature_reference": {"mean": dict(zip(FEATURE_COLS, x_fit.mean(axis=0).tolist(), strict=True)),

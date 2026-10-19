@@ -164,7 +164,7 @@ class PaperBrokerAdapter:
                 timestamp, order_id, metadata={**request.signal.metadata,
                     "signal_timestamp": request.signal.timestamp.isoformat(),
                     "signal_id": request.signal.signal_id, "entry_fee": entry_fee,
-                    "entry_slippage": self._cost(reference), "reference_price": reference}
+                    "entry_slippage": self._cost(reference), "entry_spread": self.spread, "reference_price": reference}
             )
             self.positions[position_id] = position
             result = OrderResult(
@@ -304,6 +304,8 @@ class PaperBrokerAdapter:
                 "swap": swap,
                 "features": position.metadata,
                 "entry_slippage": position.metadata.get("entry_slippage", 0.0),
+                "exit_midpoint": price + (self.spread / 2 if position.direction == Direction.LONG else -self.spread / 2),
+                "exit_spread": self.spread,
                 "entry_price": position.entry_price,
                 "stop_loss": position.stop_loss,
                 "take_profit": position.take_profit,
