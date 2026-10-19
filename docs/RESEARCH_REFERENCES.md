@@ -16,3 +16,14 @@ Attachments contained a research summary and a master task embedded in pasted co
 longer attachment files had identical SHA256 `9c0531fc5d477163244e3ea70a7a965c662b8c6567212952a5a55f053768316e`.
 The standalone named Markdown downloads were not present. The complete embedded master task and supplied
 research summary were read; their historical claims about a larger search were not independently reasserted.
+
+Additional implementation references inspected on 2026-10-19:
+
+- [scikit-learn CalibratedClassifierCV](https://scikit-learn.org/stable/modules/generated/sklearn.calibration.CalibratedClassifierCV.html)
+  and [FrozenEstimator](https://scikit-learn.org/stable/modules/generated/sklearn.frozen.FrozenEstimator.html):
+  calibrate a previously fitted estimator on a disjoint chronological training tail. The installed estimator
+  version is captured in every model card; temporal splits and purging remain our responsibility.
+- [Ollama structured outputs](https://docs.ollama.com/capabilities/structured-outputs) and
+  [chat API](https://docs.ollama.com/api/chat): optional JSON-schema hypothesis transport, nonstreaming
+  temperature zero, bounded response schema and request timeout. No real local inference was run in this audit.
+  Structured output does not make a proposal true or its generation deterministic across runtimes.

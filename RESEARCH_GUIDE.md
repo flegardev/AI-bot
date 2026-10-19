@@ -9,6 +9,18 @@ Create a virtual environment, install `requirements-dev.txt`, and copy `.env.exa
 Keep `ENABLE_LIVE_TRADING=false`, `I_UNDERSTAND_REAL_MONEY_RISK=false`, and `TRADING_MODE=paper`.
 Use your broker's demo terminal and set `MT5_TERMINAL_PATH`. Do not commit credentials, account files or generated models.
 
+The complete [experiment protocol](docs/EXPERIMENT_PROTOCOL.md) specifies selection, leakage controls,
+cost assumptions, bounded hypotheses and frozen forward rules. Start with the offline reproduction:
+
+```powershell
+python scripts/reproduce.py --output artifacts/offline-evidence-001
+```
+
+It runs diagnostic, strategy competition, ML portfolio comparison, real three-model training on artificial
+labels, catalog research automation, and a frozen forward replay. Every dataset is labeled SYNTHETIC.
+It prints actual subprocess results and writes logs, `reproduction.json` and a SHA256 manifest. It requires
+no MT5, exchange connection, API credentials, Ollama or network request. Use a fresh output path each time.
+
 ```powershell
 python main.py check --broker mt5 --symbol EURUSD
 python main.py paper --broker mt5 --symbol EURUSD --once
@@ -28,7 +40,8 @@ Paper fills remain simulated; they are not actual demo-broker fills.
 ## Historical data and reproducible backtests
 
 ```powershell
-python main.py backtest --broker mt5 --symbol EURUSD --start 2025-01-01 --end 2026-01-01 --calendar fx --output artifacts/baseline
+python main.py cache-data --broker mt5 --symbol EURUSD --start 2025-01-01 --end 2026-01-01 --calendar fx_ny --output artifacts/eurusd-cache
+python main.py backtest --data-dir artifacts/eurusd-cache --symbol EURUSD --start 2025-01-01 --end 2026-01-01 --calendar fx_ny --output artifacts/baseline
 ```
 
 The window is `[start, end)` in UTC. Download includes a separate warm-up buffer; trading and statistics only
@@ -36,8 +49,9 @@ use the evaluation window. Every required timeframe must have sufficient warm-up
 in both warm-up and evaluation. Validation rejects duplicate/unordered timestamps, NaN/infinite values, invalid
 OHLC, nonpositive prices, negative volume, and missing coverage. No price forward-filling is used.
 
-The `fx` calendar is an explicit approximation: Friday 22:00 to Sunday 22:00 UTC closed. It does not know broker
-holidays, daily breaks or DST. Review `data_quality.json`; a calendar mismatch must be resolved with documented
+The `fx_ny` calendar handles Sunday/Friday 17:00 New York and DST. The legacy `fx` calendar is an explicit
+approximation: Friday/Sunday 22:00 UTC. Neither knows broker holidays or maintenance breaks.
+Review `data_quality.json`; a calendar mismatch must be resolved with documented
 source/session information. Do not change the calendar just to hide missing data. `24/7` is for continuous data.
 
 Strict runs fail before writing performance statistics if data fails. Use a fresh output directory for each run.
@@ -47,11 +61,12 @@ status remains in the report and must not be treated as validated trading eviden
 Offline data is also supported:
 
 ```powershell
-python main.py backtest --data-dir datasets/eurusd --symbol EURUSD --start 2025-01-01 --end 2026-01-01 --calendar fx --output artifacts/offline
+python main.py backtest --data-dir datasets/eurusd --symbol EURUSD --start 2025-01-01 --end 2026-01-01 --calendar fx_ny --output artifacts/offline
 ```
 
 Supply `1h.csv`, `15m.csv`, `5m.csv` with `timestamp,open,high,low,close,volume`, explicit UTC timestamps,
-and sufficient warm-up. Prices must be midpoint OHLC. Supply `symbol.json` with the `SymbolInfo` fields:
+and sufficient warm-up. Supply `contract.json` as specified in [DATA_CONTRACT.md](docs/DATA_CONTRACT.md).
+Normalized cache prices are midpoint OHLC. Supply `symbol.json` with the `SymbolInfo` fields:
 
 ```json
 {"symbol":"EURUSD","tick_size":0.00001,"tick_value":1.0,"contract_size":100000,"volume_min":0.01,"volume_max":100,"volume_step":0.01,"leverage":100}
@@ -85,37 +100,45 @@ invalid stops, unavailable directions and ML rejection/overlap. `backtest_summar
 strategy gates from risk/order rejection reasons. Trades retain signal time, execution time, numerical entry
 features, costs, exit reason, net P&L and net-profit labels. Do not lower thresholds simply to generate activity.
 
+`signal_decisions.csv` and JSON contain decision IDs, closed-frame snapshot hashes and passed/rejected/not-reached
+stages. Execution and portfolio-active records explain other blocked cycles. `summary.md` is readable even
+with zero trades. `run_status.json`, quality reports and the SHA256 artifact manifest distinguish a completed
+run from a blocked or interrupted attempt. `regime_report.csv` and conditional exposure references add context.
+
 ## ML training and evaluation
 
 ```powershell
-python main.py backtest --broker mt5 --symbol EURUSD --start 2023-01-01 --end 2025-01-01 --train-ml --output artifacts/training
+python main.py ml-compare --data-dir datasets/eurusd --symbol EURUSD --start 2023-01-01 --end 2025-01-01 --calendar fx_ny --output artifacts/ml-comparison
 ```
 
-Training collects unfiltered rule trades, requires `ML_MIN_SAMPLES`, and splits chronologically into 60/20/20
-train/validation/test partitions. Labels are based on net P&L. Samples whose exits plus a five-minute embargo
-overlap the next partition are purged. Scaling fits training only. The validation partition decides whether
-the filter is eligible; final test outcomes never change that decision. Metrics include Brier score and
-baseline/filtered net P&L and drawdown. A model version/schema mismatch requires retraining.
+`backtest --train-ml` also works. Training collects unfiltered rule trades, requires `ML_MIN_SAMPLES`, and
+uses declared UTC 60/20/20 boundaries in portfolio research. Forced/unresolved/future outcomes are excluded.
+Exits plus a five-minute embargo cannot overlap the next partition. Fit-only scaling, a purged chronological
+calibration tail and training-only rolling folds evaluate logistic regression, RF and HistGradientBoosting.
+Validation alone selects an eligible filter at the unchanged probability threshold. Final outcomes never
+change selection. Model cards contain all candidates, versions, cutoffs, hyperparameters and hashes.
 
 Keep `USE_ML_FILTER=false` until you review evidence. When explicitly enabled, the shared strategy invokes
 the saved filter. Missing/unapproved models and signals inside the model's training/selection window block
 entries. Old models are rejected. `ml_training.json` states when samples or label classes are insufficient.
-Evaluating the model on a new held-out portfolio replay is still required: filtering changes capital use and
-trade opportunities, which a trade-table comparison alone cannot simulate.
+`ml-compare` performs independent final portfolio replays against SMC/trend/ATR/flat and selected ML cost
+stresses. If training is insufficient, it reports ML ineligible and still runs the simple references. The
+standalone row-split training API is retained for compatibility; use fixed UTC cutoffs for research.
 
 ## Baselines, walk-forward research and uncertainty
 
 ```powershell
-python main.py research --broker mt5 --symbol EURUSD --start 2023-01-01 --end 2026-01-01 --folds 3 --output artifacts/research
+python main.py compete --data-dir datasets/eurusd --symbol EURUSD --start 2023-01-01 --end 2026-01-01 --calendar fx_ny --budget 48 --output artifacts/competition
 ```
 
-The fixed candidate set contains SMC and EMA-cross/breakout baselines with periods 20 and 30. Each rolling
-fold selects using past training results and evaluates that choice on the next segment. Development ends
-at 80% of the window; the final 20% is evaluated after final selection. Candidates with no trades or no
-positive training net return do not become a winner. Risk limits remain active; they are not loosened for research.
+The default set contains flat, unchanged-original SMC, EMA trend periods 20/30, and ATR-adjusted breakout
+periods 20/30. Two rolling development folds precede fixed 60/20/20 training/validation/final partitions.
+A winner needs positive validation net return and 30 validation trades. No qualifier means rejection.
+Risk limits remain active. `research --folds` preserves the earlier exploratory research interface; use
+`compete` for the current fixed-budget protocol and original SMC comparator.
 
 Reports include all candidate attempts, a source/config/data manifest, data CSV snapshots, development
-parameter comparisons, a final selected holdout, 1.5x and 2x cost stress runs, and a seeded moving-block
+parameter comparisons, a final selected holdout, 0.75x/1.5x/2x cost stresses, and a seeded moving-block
 bootstrap interval for expectancy when there are at least 30 holdout trades. A local registry flags repeated
 evaluation of the same dataset. This is not protection against every form of research leakage: do not use
 holdout/stress results to retune and then call them untouched. Bootstrap intervals are conditional estimates,
@@ -126,6 +149,34 @@ drawdown/recovery, regime stability, nearby parameters, cost sensitivity and unc
 ledger, including failed trials. Overfitting reference: https://escholarship.org/uc/item/4w1110bb
 
 ## Frozen demo observations and execution safeguards
+
+Optional hypothesis automation uses the same deterministic competition:
+
+```powershell
+python main.py ai-research --data-dir datasets/eurusd --symbol EURUSD --start 2023-01-01 --end 2026-01-01 --calendar fx_ny --budget 48 --output artifacts/agent-research
+```
+
+Default proposals come from a labeled catalog, without an LLM. Add `--ollama-model YOUR_INSTALLED_MODEL`
+to use an already running local Ollama server, or `--proposals hypotheses.json` for a JSON list following
+`ai_research.agents.Hypothesis`. No model installation is automatic. Invalid proposals and failed runs are
+preserved in the SQLite/JSONL registry. LLM text never computes trading results or changes acceptance gates.
+
+Freeze a genuinely selected strategy, using that run's `selection.json` and validated market cache:
+
+```powershell
+python main.py freeze --selection artifacts/competition/RUN_ID/selection.json --data-dir datasets/eurusd --output artifacts/frozen-001
+python main.py forward --freeze artifacts/frozen-001/freeze.json --broker mt5 --once
+```
+
+For an approved SMC filter, add `--model PATH_TO_SELECTED_MODEL.pkl` to `freeze`. Market forward starts now
+and cannot be backdated. `forward` verifies source/config/model/runtime/contract locks on every observation,
+never retrains, owns a separate paper ledger, rejects old/duplicate/out-of-order events, and records failures,
+quote age/spread, simulated cost/fill observations and available fit-reference feature drift. The data source
+must match the frozen contract. Broker order APIs are never used. Remove `--once` for ongoing fresh-data
+logging; Ctrl+C closes the read-only connection. A failing quote/history gate must be resolved first.
+
+`python main.py forward-diagnostic --output artifacts/forward-fixture-001` runs a separately labeled
+synthetic replay. It tests the machinery; it does not represent elapsed prospective trading.
 
 Demo exports include configuration/model/source fingerprints, quote validity, blocked cycles, paper account
 snapshots and closed trades. Changes create a new configuration fingerprint. Freeze the chosen configuration,
@@ -151,7 +202,7 @@ Live Binance execution is disabled until it has equivalent verified safeguards.
 ```powershell
 python -m pytest
 ruff check .
-mypy backtest brokers core data execution ml persistence risk strategy config.py logger.py main.py web_demo.py
+mypy ai_research backtest brokers core data execution forward ml persistence risk strategy config.py logger.py main.py web_demo.py
 ```
 
 CI runs pytest on supported Python 3.12 and 3.13. This includes pytest function tests that the old unittest-only CI skipped.

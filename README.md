@@ -2,11 +2,22 @@
 
 A modular algorithmic trading and quantitative backtesting framework in Python featuring MetaTrader 5 and Binance broker adapters, Scikit-Learn ML signal filtering, multi-gate execution safety, and local dashboard monitoring.
 
-## Research reliability upgrade
+## Paper research platform
 
-See [RESEARCH_GUIDE.md](RESEARCH_GUIDE.md) for strict historical data checks, strategy rejection diagnostics,
-delayed executable fills, completed-bar paper exits, purged ML training, baseline comparisons,
-rolling forward evaluation, cost stress tests, and demo observation exports.
+See [RESEARCH_GUIDE.md](RESEARCH_GUIDE.md) for runnable commands and
+[the experiment protocol](docs/EXPERIMENT_PROTOCOL.md) for data gates, unchanged SMC comparisons,
+bounded strategy search, three calibrated chronological models, constrained hypothesis automation,
+and frozen forward paper evaluations. [Primary-source references](docs/RESEARCH_REFERENCES.md) record the
+engineering patterns adopted and their limits.
+
+Run the complete offline software demonstration in a new output directory:
+
+```powershell
+python scripts/reproduce.py --output artifacts/offline-evidence-001
+```
+
+This writes explicitly synthetic data, diagnostic/benchmark/ML/agent/forward artifacts, logs and hashes.
+Its artificial classifier results are software evidence only. Market research must pass its own data checks.
 
 Profitability is unproven. A passing software test or a profitable historical sample does not approve live trading.
 Research commands block incomplete history. Entry execution blocks stale, future, malformed, or overly wide quotes.
@@ -38,7 +49,7 @@ The framework incorporates risk management controls including dynamic volatility
 
 ## Tech Stack
 
-- **Core Runtime**: Python 3.13+ (Asyncio, Typing, Dataclasses)
+- **Core Runtime**: Python 3.12 or 3.13 (Typing, Dataclasses)
 - **Quantitative & ML Libraries**: Pandas, NumPy, Scikit-Learn, Joblib
 - **Brokers & Exchange APIs**: CCXT (Binance REST), MetaTrader5 Python API
 - **Utilities & UI**: Python-Dotenv, Colorama, Native HTTP Dashboard
@@ -48,11 +59,13 @@ The framework incorporates risk management controls including dynamic volatility
 
 ```text
 ai-bot/
+├── ai_research/                # Constrained hypotheses, deterministic runner, critic, registry
 ├── backtest/                   # Historical simulation engine & metrics
 ├── brokers/                    # MT5, Binance (CCXT), and Paper broker adapters
 ├── core/                       # Strategy engine, signal models, and candle validators
 ├── data/                       # Market data fetchers and OHLCV stores
 ├── execution/                  # Order router and balance reconciliation
+├── forward/                    # Frozen prospective paper-only observation loop
 ├── ml/                         # Scikit-learn signal classification models & training
 ├── persistence/                # SQLite/JSON state store for orders & executions
 ├── risk/                       # Position sizing, drawdown limits, and circuit breakers
@@ -92,7 +105,7 @@ ai-bot/
 
 3. **Install dependencies:**
    ```bash
-   pip install -r requirements.txt
+   pip install -r requirements.lock
    ```
 
 4. **Configure environment variables:**
