@@ -108,3 +108,17 @@ class TradingStore:
                 "SELECT response FROM idempotency WHERE client_order_id=?", (client_order_id,)
             ).fetchone()
         return json.loads(row["response"]) if row else None
+
+    def claim_entry(self, client_order_id: str) -> bool:
+        """Persist an atomic in-flight reservation before contacting a broker."""
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT value FROM state WHERE key='pending_entry'").fetchone()
+            if row and json.loads(row["value"]) is not None:
+                return False
+            connection.execute(
+                "INSERT INTO state(key,value,updated_at) VALUES('pending_entry',?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",
+                (json.dumps(client_order_id), datetime.now(timezone.utc).isoformat()),
+            )
+            return True

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import datetime, time, timezone
 
@@ -47,6 +48,7 @@ class RiskEngine:
         symbol_notional: float = 0.0,
         live_entries_enabled: bool = True,
         sizing: SizingResult | None = None,
+        now: datetime | None = None,
     ) -> RiskDecision:
         account = sizing_request.account
         reasons: list[str] = []
@@ -55,13 +57,13 @@ class RiskEngine:
             reasons.append("entries disabled by kill switch")
         if len(open_positions) >= self.limits.max_open_positions:
             reasons.append("maximum open positions reached")
-        if spread > self.limits.max_spread:
+        if not math.isfinite(spread) or spread < 0 or spread > self.limits.max_spread:
             reasons.append("spread exceeds limit")
         observed = price_timestamp or signal.timestamp
         if observed.tzinfo is None:
             observed = observed.replace(tzinfo=timezone.utc)
-        age = (datetime.now(timezone.utc) - observed.astimezone(timezone.utc)).total_seconds()
-        if age > self.limits.max_price_age_seconds:
+        age = ((now or datetime.now(timezone.utc)) - observed.astimezone(timezone.utc)).total_seconds()
+        if age < -5 or age > self.limits.max_price_age_seconds:
             reasons.append("stale price")
         daily_pnl = account.realized_pnl_today
         if self.limits.include_floating_in_daily_loss:
@@ -70,11 +72,13 @@ class RiskEngine:
             start_of_day_equity * self.limits.max_daily_loss_fraction
         ):
             reasons.append("daily loss limit reached")
+        elif start_of_day_equity > 0 and account.equity <= start_of_day_equity * (1 - self.limits.max_daily_loss_fraction):
+            reasons.append("daily loss limit reached")
         if equity_high_water > 0:
             drawdown = (equity_high_water - account.equity) / equity_high_water
             if drawdown >= self.limits.max_drawdown_fraction:
                 reasons.append("maximum drawdown reached")
-        if portfolio_risk >= account.equity * self.limits.max_portfolio_risk_fraction:
+        if portfolio_risk + sizing_result.estimated_loss_at_stop > account.equity * self.limits.max_portfolio_risk_fraction or portfolio_risk >= account.equity * self.limits.max_portfolio_risk_fraction:
             reasons.append("maximum portfolio risk reached")
         proposed_notional = (
             sizing_request.entry_price

@@ -23,6 +23,7 @@ def test_backtest_writes_all_required_artifacts_without_fake_trades(tmp_path):
     expected = {
         "backtest_summary.json", "trades.csv", "equity_curve.csv",
         "drawdown_curve.csv", "monthly_returns.csv", "backtest_config_snapshot.json",
+        "data_quality.json", "strategy_diagnostics.json",
     }
     assert expected == {path.name for path in tmp_path.iterdir()}
     assert result["trades"] == []

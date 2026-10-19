@@ -9,7 +9,7 @@ import math
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, ClassVar, Optional
+from typing import ClassVar
 from uuid import uuid4
 
 import config
@@ -727,7 +727,7 @@ class LiveTrader:
                 self._handle_ambiguous_entry_failure(
                     record, symbol, base_asset, base_balance_before, size, e
                 )
-                raise AssertionError("ambiguous entry handler must raise")
+                raise AssertionError("ambiguous entry handler must raise") from e
 
             reported_filled = order.get("filled")
             if reported_filled is None:
