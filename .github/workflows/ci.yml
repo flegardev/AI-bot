@@ -29,13 +29,15 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.lock
-          pip install pytest ruff
+          pip install pytest ruff mypy pandas-stubs
       - name: Compile-check all sources
-        run: python -m compileall -q backtest data execution ml risk strategy tests config.py logger.py main.py web_demo.py
+        run: python -m compileall -q ai_research backtest brokers core data execution forward ml persistence risk scripts strategy tests config.py logger.py main.py web_demo.py
       - name: Run unit tests
         run: python -m pytest
       - name: Lint sources
         run: ruff check .
+      - name: Check production types
+        run: mypy ai_research backtest brokers core data execution forward ml persistence risk strategy config.py logger.py main.py web_demo.py
 
   docker:
     runs-on: ubuntu-latest

@@ -65,6 +65,18 @@ def parser():
     commands.add_parser("demo-report").add_argument("--output", default="artifacts/demo")
     commands.add_parser("diagnostic").add_argument("--output", default="artifacts/diagnostic")
     commands.add_parser("model-diagnostic").add_argument("--output", default="artifacts/model-diagnostic")
+    commands.add_parser("forward-diagnostic").add_argument("--output", default="artifacts/forward-diagnostic")
+    freeze = commands.add_parser("freeze")
+    freeze.add_argument("--selection", required=True)
+    freeze.add_argument("--data-dir", required=True, help="contract.json and symbol.json for the selected source")
+    freeze.add_argument("--model")
+    freeze.add_argument("--start")
+    freeze.add_argument("--output", required=True)
+    forward = commands.add_parser("forward")
+    forward.add_argument("--freeze", required=True)
+    forward.add_argument("--broker", choices=["mt5", "binance"], default="mt5")
+    forward.add_argument("--once", action="store_true")
+    forward.add_argument("--poll-seconds", type=int, default=60)
     return root
 
 
@@ -289,6 +301,22 @@ def run_loop(args, live):
 
 def main():
     args = parser().parse_args()
+    if args.command == "forward-diagnostic":
+        from forward.cli import diagnostic
+        print(json.dumps(diagnostic(args.output), indent=2))
+        return 0
+    if args.command == "freeze":
+        from forward.frozen import freeze_candidate
+        directory = Path(args.data_dir)
+        result = freeze_candidate(json.loads(Path(args.selection).read_text(encoding="utf-8")),
+            MarketDataContract.read(directory / "contract.json"), args.output,
+            symbol_info=SymbolInfo(**json.loads((directory / "symbol.json").read_text(encoding="utf-8"))),
+            model_path=args.model, start=args.start)
+        print(json.dumps(result, indent=2))
+        return 0
+    if args.command == "forward":
+        from forward.cli import run
+        return run(args, make_broker(args.broker))
     if args.command == "model-diagnostic":
         from data.fixtures import labeled_model_fixture
         target = Path(args.output)
