@@ -50,7 +50,9 @@ class MarketDataContract:
         if self.price_basis == "bid":
             spread = result["spread"] if "spread" in result else constant_spread
             result.loc[:, ["open", "high", "low", "close"]] = result[["open", "high", "low", "close"]].add(spread / 2, axis=0) if hasattr(spread, "index") else result[["open", "high", "low", "close"]] + spread / 2
-        result.attrs["data_contract"] = asdict(self)
+        # The attached contract describes returned data, so a cache reload cannot convert twice.
+        result.attrs["data_contract"] = {**asdict(self), "timestamp_basis": "utc", "timezone": "UTC", "price_basis": "midpoint"}
+        result.attrs["input_contract"] = asdict(self)
         return result
 
     @property

@@ -354,7 +354,7 @@ def main():
                         if args.calendar != contract.calendar:
                             raise ValueError("--calendar disagrees with cached data contract")
                     else:
-                        frame.index = pd.DatetimeIndex(pd.to_datetime(frame.index, utc=True))
+                        frames[tf] = MarketDataContract("offline cache without provenance contract", "unknown", calendar=args.calendar).normalize(frame)
                 info = SymbolInfo(**json.loads((directory / "symbol.json").read_text(encoding="utf-8")))
                 if info.symbol != args.symbol:
                     raise ValueError("symbol.json does not match --symbol")
@@ -370,7 +370,12 @@ def main():
                 target.mkdir(parents=True, exist_ok=True)
                 for tf, frame in frames.items():
                     frame.to_csv(target / f"{tf}.csv", index_label="timestamp")
-                contract = MarketDataContract(f"{args.broker}:{args.symbol}", calendar=args.calendar)
+                if args.data_dir:
+                    contract = MarketDataContract(**next(iter(frames.values())).attrs["data_contract"])
+                else:
+                    contract = MarketDataContract(f"{args.broker}:{args.symbol}", calendar=args.calendar)
+                for frame in frames.values():
+                    frame.attrs["data_contract"] = asdict(contract)
                 (target / "contract.json").write_text(json.dumps(asdict(contract), indent=2), encoding="utf-8")
                 (target / "symbol.json").write_text(json.dumps(asdict(info), indent=2), encoding="utf-8")
                 report = inspect_dataset(frames, start, end, args.calendar, True)
